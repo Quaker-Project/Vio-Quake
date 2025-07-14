@@ -1,11 +1,9 @@
-streamlit
-geopandas>=0.14
-pygam
-numpy
 pandas
-scipy
-shapely
-xlsxwriter
-openpyxl
+geopandas
 numpy==1.24.0
 pygam==0.8.0
+shapely
+scipy
+openpyxl
+xlsxwriter
+streamlit
