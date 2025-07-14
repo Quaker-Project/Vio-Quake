@@ -8,7 +8,6 @@ openpyxl
 xlsxwriter
 
 # geopandas y dependencias con versiones concretas que funcionan bien en Streamlit Cloud
-geopandas==0.13.0
 fiona==1.8.22
 pyproj==3.5.0
 rasterio==1.3.6
