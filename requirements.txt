@@ -1,8 +1,9 @@
 streamlit
-geopandas
+geopandas>=0.14
 pygam
 numpy
 pandas
 scipy
 shapely
 xlsxwriter
+openpyxl
