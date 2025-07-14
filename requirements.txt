@@ -1,13 +1,8 @@
 streamlit
-pandas
-numpy
+geopandas
 pygam
-shapely
+numpy
+pandas
 scipy
-openpyxl
+shapely
 xlsxwriter
-
-# geopandas y dependencias con versiones concretas que funcionan bien en Streamlit Cloud
-fiona==1.8.22
-pyproj==3.5.0
-rasterio==1.3.6
