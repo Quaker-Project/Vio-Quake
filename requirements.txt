@@ -1,9 +1,14 @@
+streamlit
 pandas
-geopandas
 numpy==1.24.0
 pygam==0.8.0
+geopandas
 shapely
 scipy
 openpyxl
 xlsxwriter
-streamlit
+
+# Dependencias necesarias para geopandas
+fiona
+pyproj
+rasterio
