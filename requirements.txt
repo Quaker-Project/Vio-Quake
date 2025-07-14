@@ -1,0 +1,8 @@
+streamlit
+geopandas
+pygam
+numpy
+pandas
+scipy
+shapely
+xlsxwriter
