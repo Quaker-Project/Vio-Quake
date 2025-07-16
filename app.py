@@ -104,7 +104,7 @@ def main():
     
     Este sistema permite simular patrones de delitos replicando comportamientos observados en los datos históricos. Ajusta parámetros en la barra lateral y lanza simulaciones.
     """)
-    
+
     archivo_datos = st.file_uploader("📂 Suba datos de eventos (CSV/Excel)", type=["csv", "xls", "xlsx"])
     df = cargar_archivo_datos(archivo_datos)
 
@@ -154,7 +154,8 @@ def main():
                                           mu_boost=mu_boost,
                                           alpha=alpha, beta=beta, gamma=gamma,
                                           max_eventos=max_eventos,
-                                          seed=42 if usar_semilla else None)
+                                          seed=42 if usar_semilla else None,
+                                          st_out=st)  # <--- Pasamos streamlit aquí
 
             st.success(f"✅ Simulados {len(gdf_sim)} eventos")
 
