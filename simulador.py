@@ -4,14 +4,13 @@ import numpy as np
 from datetime import timedelta
 from pygam import GAM, s
 from shapely.geometry import Point
+from shapely.ops import unary_union
 from scipy.spatial.distance import cdist
 import warnings
-
 warnings.filterwarnings("ignore")
 
 def entrenar_modelo_gam(df, fecha_inicio, fecha_fin, usar_hora=False):
-    df_train = df[(df['Fecha'] >= pd.to_datetime(fecha_inicio)) &
-                  (df['Fecha'] <= pd.to_datetime(fecha_fin))].copy()
+    df_train = df[(df['Fecha'] >= fecha_inicio) & (df['Fecha'] <= fecha_fin)].copy()
     df_train = df_train.dropna(subset=['Long', 'Lat', 'Fecha'])
 
     min_fecha = df_train['Fecha'].min()
@@ -34,12 +33,10 @@ def entrenar_modelo_gam(df, fecha_inicio, fecha_fin, usar_hora=False):
     return gam, min_fecha, factor_ajuste
 
 def preparar_probabilidades_poligonos(gdf_zona, df_train):
-    gdf_train = gpd.GeoDataFrame(
-        df_train,
-        geometry=gpd.points_from_xy(df_train['Long'], df_train['Lat']),
-        crs=gdf_zona.crs
-    )
-    sjoined = gpd.sjoin(gdf_train, gdf_zona, how='inner', predicate='intersects')
+    gdf_train = gpd.GeoDataFrame(df_train,
+                                 geometry=gpd.points_from_xy(df_train['Long'], df_train['Lat']),
+                                 crs=gdf_zona.crs)
+    sjoined = gpd.sjoin(gdf_train, gdf_zona, how='inner')
     conteo = sjoined.groupby('index_right').size()
 
     probs = np.zeros(len(gdf_zona))
@@ -48,7 +45,8 @@ def preparar_probabilidades_poligonos(gdf_zona, df_train):
 
     if probs.sum() == 0:
         probs = np.ones(len(gdf_zona))
-    return probs / probs.sum()
+    probs = probs / probs.sum()
+    return probs
 
 def samplear_punto_en_poligono(poligono):
     minx, miny, maxx, maxy = poligono.bounds
@@ -72,37 +70,34 @@ def simular_eventos(df, fecha_inicio_train, fecha_fin_train,
 
     sim_events = []
 
-    # t_ini y t_fin en días o fracciones de días si usar_hora
+    # t_ini y t_fin en días
     if usar_hora:
         t_ini = 0
-        delta_sim = (pd.to_datetime(fecha_fin_sim) + pd.Timedelta(days=1)) - pd.to_datetime(fecha_inicio_sim)
-        t_fin = delta_sim.total_seconds() / 86400.0
+        t_fin = (fecha_fin_sim - fecha_inicio_sim).total_seconds() / 86400.0
     else:
         t_ini = 0
-        t_fin = (pd.to_datetime(fecha_fin_sim) - pd.to_datetime(fecha_inicio_sim)).days + 1
+        t_fin = (fecha_fin_sim.normalize() - fecha_inicio_sim.normalize()).days + 1
 
-    # Entrenamiento para probabilidad espacial
-    df_train = df[(df['Fecha'] >= pd.to_datetime(fecha_inicio_train)) &
-                  (df['Fecha'] <= pd.to_datetime(fecha_fin_train))].copy()
+    df_train = df[(df['Fecha'] >= fecha_inicio_train) & (df['Fecha'] <= fecha_fin_train)].copy()
     probs_poligonos = preparar_probabilidades_poligonos(gdf_zona, df_train)
 
     t = t_ini
 
     while t < t_fin:
         if len(sim_events) >= max_eventos:
-            print("Se alcanzó el límite de eventos.")
+            print("Se alcanzó el límite de eventos por seguridad.")
             break
 
         u1 = np.random.uniform()
-        w = -np.log(u1) / 30.0  # tiempo hasta próximo candidato (media 1/30 días)
+        w = -np.log(u1) / 30.0
         t_candidate = t + w
         if t_candidate > t_fin:
             break
 
         if usar_hora:
-            fecha_sim = pd.to_datetime(fecha_inicio_sim) + pd.to_timedelta(t_candidate, unit='d')
+            fecha_sim = fecha_inicio_sim + timedelta(days=t_candidate)
         else:
-            fecha_sim = pd.to_datetime(fecha_inicio_sim) + timedelta(days=int(t_candidate))
+            fecha_sim = fecha_inicio_sim + timedelta(days=int(t_candidate))
 
         idx_poligono = np.random.choice(len(gdf_zona), p=probs_poligonos)
         poligono = gdf_zona.iloc[idx_poligono].geometry
@@ -116,7 +111,6 @@ def simular_eventos(df, fecha_inicio_train, fecha_fin_train,
         mu = modelo_gam.predict([[t_norm, lon, lat]])[0]
         mu = max(mu * factor_ajuste * mu_boost, 1e-6)
 
-        # Autoexcitación
         excitation = 0.0
         if sim_events:
             eventos_previos = np.array([[e['t'], e['Long'], e['Lat']] for e in sim_events])
