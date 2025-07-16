@@ -19,20 +19,24 @@ uploaded_file = st.sidebar.file_uploader("Sube un archivo .csv o .xlsx con colum
 usar_hora = st.sidebar.checkbox("🕒 ¿Incluir hora en la simulación?", value=False)
 
 @st.cache_data
+
 def cargar_datos(file):
     if file.name.endswith('.csv'):
         df = pd.read_csv(file)
     else:
         df = pd.read_excel(file)
 
+    # Eliminar filas sin coordenadas
     df = df.dropna(subset=['Long', 'Lat'])
 
+    # Si se usa la hora, combinar Fecha + Hora
     if usar_hora and 'Hora' in df.columns:
         df['Fecha'] = pd.to_datetime(df['Fecha'].astype(str) + ' ' + df['Hora'].astype(str), errors='coerce')
     else:
         df['Fecha'] = pd.to_datetime(df['Fecha'], errors='coerce')
 
-    return df.dropna(subset=['Fecha'])
+    df = df.dropna(subset=['Fecha'])
+    return df
 
 if uploaded_file:
     df = cargar_datos(uploaded_file)
@@ -49,6 +53,7 @@ if uploaded_file:
     if isinstance(fecha_fin, datetime): fecha_fin = fecha_fin.date()
 
     from funciones_simulacion import entrenar_modelo_gam
+
     gam_model, min_fecha_train, factor_ajuste = entrenar_modelo_gam(df, fecha_inicio, fecha_fin, usar_hora)
     st.sidebar.markdown(f"**Factor ajuste:** {factor_ajuste:.2f}")
 
@@ -64,6 +69,7 @@ if uploaded_file:
     simular = st.sidebar.button("▶️ Ejecutar Simulación")
 
     if simular:
+        # Crear polígonos artificiales (buffer de 0.01 grados)
         from shapely.geometry import Polygon
         buffers = [Point(xy).buffer(0.01) for xy in zip(df['Long'], df['Lat'])]
         union = gpd.GeoSeries(buffers).unary_union
@@ -87,7 +93,10 @@ if uploaded_file:
         gdf_sim['tipo'] = 'simulado'
         df_plot = pd.concat([df[['Fecha', 'tipo']], gdf_sim[['Fecha', 'tipo']]])
 
-        df_plot['Fecha'] = df_plot['Fecha'].dt.floor('H') if usar_hora else df_plot['Fecha'].dt.date
+        if usar_hora:
+            df_plot['Fecha'] = df_plot['Fecha'].dt.floor('H')
+        else:
+            df_plot['Fecha'] = df_plot['Fecha'].dt.date
 
         resumen = df_plot.groupby(['Fecha', 'tipo']).size().reset_index(name='conteo')
         resumen = resumen.pivot(index='Fecha', columns='tipo', values='conteo').fillna(0)
@@ -103,5 +112,6 @@ if uploaded_file:
             file_name="eventos_simulados.csv",
             mime="text/csv"
         )
+
 else:
     st.info("Por favor, sube un archivo para comenzar.")
