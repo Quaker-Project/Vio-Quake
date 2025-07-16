@@ -55,105 +55,71 @@ def samplear_punto_en_poligono(poligono):
         if poligono.contains(p):
             return p.x, p.y
 
-def simular_eventos(df, fecha_inicio_train, fecha_fin_train,
-                    fecha_inicio_sim, fecha_fin_sim,
-                    gdf_zona, modelo_gam, min_fecha_train,
-                    factor_ajuste=1.0, mu_boost=1.0,
-                    alpha=0.5, beta=0.1, gamma=0.05,
-                    max_eventos=10000, seed=None,
-                    usar_hora=False,
-                    tasa_base_percentil=90):
+def simular_eventos_aprendiendo(df, fecha_inicio_train, fecha_fin_train,
+                                fecha_inicio_sim, fecha_fin_sim,
+                                gdf_zona, modelo_gam, min_fecha_train,
+                                factor_ajuste=1.0, mu_boost=1.0,
+                                seed=None, usar_hora=False):
 
     if seed is not None:
         np.random.seed(seed)
-    else:
-        np.random.seed()
 
-    sim_events = []
-
-    if usar_hora:
-        t_ini = 0
-        t_fin = (fecha_fin_sim - fecha_inicio_sim).total_seconds() / 86400.0
-    else:
-        t_ini = 0
-        t_fin = (fecha_fin_sim.normalize() - fecha_inicio_sim.normalize()).days + 1
-
+    # Extraer datos de entrenamiento (para densidad espacial)
     df_train = df[(df['Fecha'] >= fecha_inicio_train) & (df['Fecha'] <= fecha_fin_train)].copy()
+    df_train = df_train.dropna(subset=['Long', 'Lat', 'Fecha'])
+
+    # Calcular duración de simulación
+    if usar_hora:
+        duracion_sim = (fecha_fin_sim - fecha_inicio_sim).total_seconds() / 86400.0
+    else:
+        duracion_sim = (fecha_fin_sim.normalize() - fecha_inicio_sim.normalize()).days + 1
+
+    # Calcular duración del entrenamiento
+    if usar_hora:
+        duracion_train = (fecha_fin_train - fecha_inicio_train).total_seconds() / 86400.0
+    else:
+        duracion_train = (fecha_fin_train.normalize() - fecha_inicio_train.normalize()).days + 1
+
+    # Media diaria observada en entrenamiento
+    media_diaria_real = len(df_train) / duracion_train
+
+    # Total de eventos a simular
+    n_eventos = int(media_diaria_real * duracion_sim * mu_boost)
+
+    # Estimar probabilidades espaciales
     probs_poligonos = preparar_probabilidades_poligonos(gdf_zona, df_train)
 
-    # Muestrear 100 puntos para mu estimado
-    sample_t = np.linspace(t_ini, t_fin, num=100)
-    sample_polygons = np.random.choice(len(gdf_zona), size=100, p=probs_poligonos)
-    mus = []
-    for i in range(100):
-        poligono = gdf_zona.iloc[sample_polygons[i]].geometry
-        lon, lat = samplear_punto_en_poligono(poligono)
-        mus.append(modelo_gam.predict([[sample_t[i], lon, lat]])[0])
-    mus = np.array(mus) * factor_ajuste * mu_boost
+    eventos_sim = []
 
-    # Ahora usar percentil para tasa base
-    base_mu = np.percentile(mus, tasa_base_percentil)
-    base_mu = max(base_mu, 1e-6)
-
-    print(f"[DEBUG] base_mu ({tasa_base_percentil}th perc): {base_mu:.4f}")
-    print(f"[DEBUG] factor_ajuste: {factor_ajuste:.4f}, mu_boost: {mu_boost:.4f}")
-
-    t = t_ini
-
-    while t < t_fin:
-        if len(sim_events) >= max_eventos:
-            print("Se alcanzó el límite de eventos por seguridad.")
-            break
-
-        u1 = np.random.uniform()
-        w = -np.log(u1) / base_mu
-        t_candidate = t + w
-        if t_candidate > t_fin:
-            break
-
+    for _ in range(n_eventos):
+        # Fecha aleatoria dentro del rango
         if usar_hora:
-            fecha_sim = fecha_inicio_sim + timedelta(days=t_candidate)
+            offset_dias = np.random.uniform(0, duracion_sim)
+            fecha_sim = fecha_inicio_sim + timedelta(days=offset_dias)
+            t_norm = (fecha_sim - min_fecha_train).total_seconds() / 86400.0
         else:
-            fecha_sim = fecha_inicio_sim + timedelta(days=int(t_candidate))
+            offset_dias = np.random.randint(0, duracion_sim)
+            fecha_sim = fecha_inicio_sim + timedelta(days=offset_dias)
+            t_norm = (fecha_sim.normalize() - min_fecha_train.normalize()).days
 
+        # Elegir zona espacial
         idx_poligono = np.random.choice(len(gdf_zona), p=probs_poligonos)
         poligono = gdf_zona.iloc[idx_poligono].geometry
         lon, lat = samplear_punto_en_poligono(poligono)
 
-        if usar_hora:
-            t_norm = (fecha_sim - min_fecha_train).total_seconds() / 86400.0
-        else:
-            t_norm = (fecha_sim.normalize() - min_fecha_train.normalize()).days
-
+        # Validar con GAM (intensidad)
         mu = modelo_gam.predict([[t_norm, lon, lat]])[0]
-        mu = max(mu * factor_ajuste * mu_boost, 1e-6)
+        mu *= factor_ajuste * mu_boost
 
-        excitation = 0.0
-        if sim_events:
-            eventos_previos = np.array([[e['t'], e['Long'], e['Lat']] for e in sim_events])
-            tiempos_previos = eventos_previos[:, 0]
-            coords_previos = eventos_previos[:, 1:3]
+        # Umbral de aceptación
+        if mu > 0:
+            eventos_sim.append({'Fecha': fecha_sim, 'Long': lon, 'Lat': lat})
 
-            dt = t_candidate - tiempos_previos
-            dist = cdist([[lon, lat]], coords_previos)[0]
-
-            excitation = np.sum(alpha * np.exp(-beta * dt) * np.exp(-gamma * dist))
-
-        intensidad_total = max(mu + excitation, 1e-6)
-        lambda_max = max(intensidad_total * 1.5, 1e-6)
-
-        u2 = np.random.uniform()
-        if u2 <= intensidad_total / lambda_max:
-            sim_events.append({'Fecha': fecha_sim, 'Long': lon, 'Lat': lat, 't': t_candidate})
-
-        t = t_candidate
-
-    print(f"[DEBUG] Eventos simulados: {len(sim_events)}")
-
-    df_sim = pd.DataFrame(sim_events)
-    if df_sim.empty:
+    # Convertir a GeoDataFrame
+    if not eventos_sim:
         return gpd.GeoDataFrame(columns=['Fecha', 'Long', 'Lat', 'geometry'], crs=gdf_zona.crs)
 
+    df_sim = pd.DataFrame(eventos_sim)
     gdf_sim = gpd.GeoDataFrame(df_sim,
                                geometry=gpd.points_from_xy(df_sim['Long'], df_sim['Lat']),
                                crs=gdf_zona.crs)
