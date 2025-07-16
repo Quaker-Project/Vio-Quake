@@ -1,3 +1,5 @@
+# --- simulador.py (con soporte para hora) ---
+
 import pandas as pd
 import geopandas as gpd
 import numpy as np
@@ -9,16 +11,13 @@ from scipy.spatial.distance import cdist
 import warnings
 warnings.filterwarnings("ignore")
 
-def entrenar_modelo_gam(df, fecha_inicio, fecha_fin, usar_hora=False):
-    df_train = df[(df['Fecha'] >= pd.to_datetime(fecha_inicio)) &
-                  (df['Fecha'] <= pd.to_datetime(fecha_fin))].copy()
-    df_train = df_train.dropna(subset=['Long', 'Lat', 'Fecha'])
+def entrenar_modelo_gam(df, fecha_inicio, fecha_fin):
+    df_train = df[(df['FechaHora'] >= pd.to_datetime(fecha_inicio)) &
+                  (df['FechaHora'] <= pd.to_datetime(fecha_fin))].copy()
+    df_train = df_train.dropna(subset=['Long', 'Lat', 'FechaHora'])
 
-    min_fecha = df_train['Fecha'].min()
-    if usar_hora:
-        df_train['t'] = (df_train['Fecha'] - min_fecha).dt.total_seconds() / 86400.0
-    else:
-        df_train['t'] = (df_train['Fecha'] - min_fecha).dt.days
+    min_fecha = df_train['FechaHora'].min()
+    df_train['t'] = (df_train['FechaHora'] - min_fecha).dt.total_seconds() / 86400.0
 
     X = df_train[['t', 'Long', 'Lat']].values
     y = np.ones(len(df_train))
@@ -36,6 +35,7 @@ def preparar_probabilidades_poligonos(gdf_zona, df_train):
     gdf_train = gpd.GeoDataFrame(df_train,
                                   geometry=gpd.points_from_xy(df_train['Long'], df_train['Lat']),
                                   crs=gdf_zona.crs)
+
     sjoined = gpd.sjoin(gdf_train, gdf_zona, how='inner')
     conteo = sjoined.groupby('index_right').size()
 
@@ -45,7 +45,8 @@ def preparar_probabilidades_poligonos(gdf_zona, df_train):
 
     if probs.sum() == 0:
         probs = np.ones(len(gdf_zona))
-    return probs / probs.sum()
+    probs = probs / probs.sum()
+    return probs
 
 def samplear_punto_en_poligono(poligono):
     minx, miny, maxx, maxy = poligono.bounds
@@ -59,7 +60,7 @@ def simular_eventos(df, fecha_inicio_train, fecha_fin_train,
                     gdf_zona, modelo_gam, min_fecha_train,
                     factor_ajuste=1.0, mu_boost=1.0,
                     alpha=0.5, beta=0.1, gamma=0.05,
-                    max_eventos=10000, seed=None, usar_hora=False):
+                    max_eventos=10000, seed=None):
 
     if seed is not None:
         np.random.seed(seed)
@@ -67,19 +68,15 @@ def simular_eventos(df, fecha_inicio_train, fecha_fin_train,
         np.random.seed()
 
     sim_events = []
+    t_ini = 0
+    t_fin = max(1, (pd.to_datetime(fecha_fin_sim) - pd.to_datetime(fecha_inicio_sim)).days + 1)
 
-    if usar_hora:
-        t_ini = 0
-        t_fin = max(1.0, (pd.to_datetime(fecha_fin_sim) - pd.to_datetime(fecha_inicio_sim)).total_seconds() / 86400.0)
-    else:
-        t_ini = 0
-        t_fin = max(1, (pd.to_datetime(fecha_fin_sim) - pd.to_datetime(fecha_inicio_sim)).days + 1)
-
-    df_train = df[(df['Fecha'] >= pd.to_datetime(fecha_inicio_train)) &
-                  (df['Fecha'] <= pd.to_datetime(fecha_fin_train))].copy()
+    df_train = df[(df['FechaHora'] >= pd.to_datetime(fecha_inicio_train)) &
+                  (df['FechaHora'] <= pd.to_datetime(fecha_fin_train))].copy()
     probs_poligonos = preparar_probabilidades_poligonos(gdf_zona, df_train)
 
     t = t_ini
+
     while t < t_fin:
         if len(sim_events) >= max_eventos:
             print("Se alcanzó el límite de eventos por seguridad.")
@@ -91,24 +88,25 @@ def simular_eventos(df, fecha_inicio_train, fecha_fin_train,
         if t_candidate > t_fin:
             break
 
-        fecha_sim = pd.to_datetime(fecha_inicio_sim) + (
-            pd.to_timedelta(t_candidate, unit='D') if usar_hora else timedelta(days=int(t_candidate))
-        )
+        fecha_sim = pd.to_datetime(fecha_inicio_sim) + pd.to_timedelta(t_candidate, unit='D')
 
         idx_poligono = np.random.choice(len(gdf_zona), p=probs_poligonos)
         poligono = gdf_zona.iloc[idx_poligono].geometry
         lon, lat = samplear_punto_en_poligono(poligono)
 
-        t_norm = (fecha_sim - min_fecha_train).total_seconds() / 86400.0 if usar_hora else (fecha_sim - min_fecha_train).days
-
+        t_norm = (fecha_sim - min_fecha_train).total_seconds() / 86400.0
         mu = modelo_gam.predict([[t_norm, lon, lat]])[0]
         mu = max(mu * factor_ajuste * mu_boost, 1e-6)
 
         excitation = 0.0
         if sim_events:
             eventos_previos = np.array([[e['t'], e['Long'], e['Lat']] for e in sim_events])
-            dt = t_candidate - eventos_previos[:, 0]
-            dist = cdist([[lon, lat]], eventos_previos[:, 1:3])[0]
+            tiempos_previos = eventos_previos[:, 0]
+            coords_previos = eventos_previos[:, 1:3]
+
+            dt = t_candidate - tiempos_previos
+            dist = cdist([[lon, lat]], coords_previos)[0]
+
             excitation = np.sum(alpha * np.exp(-beta * dt) * np.exp(-gamma * dist))
 
         intensidad_total = max(mu + excitation, 1e-6)
@@ -116,14 +114,15 @@ def simular_eventos(df, fecha_inicio_train, fecha_fin_train,
 
         u2 = np.random.uniform()
         if u2 <= intensidad_total / lambda_max:
-            sim_events.append({'Fecha': fecha_sim, 'Long': lon, 'Lat': lat, 't': t_candidate})
+            sim_events.append({'FechaHora': fecha_sim, 'Long': lon, 'Lat': lat, 't': t_candidate})
 
         t = t_candidate
 
     df_sim = pd.DataFrame(sim_events)
     if df_sim.empty:
-        return gpd.GeoDataFrame(columns=['Fecha', 'Long', 'Lat', 'geometry'], crs=gdf_zona.crs)
+        return gpd.GeoDataFrame(columns=['FechaHora', 'Long', 'Lat', 'geometry'], crs=gdf_zona.crs)
 
     gdf_sim = gpd.GeoDataFrame(df_sim,
                                geometry=gpd.points_from_xy(df_sim['Long'], df_sim['Lat']),
-                               crs=gdf_zona.crs)_
+                               crs=gdf_zona.crs)
+    return gdf_sim
