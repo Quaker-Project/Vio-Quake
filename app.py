@@ -6,11 +6,8 @@ import io
 from simulador import entrenar_modelo_gam, simular_eventos
 
 def cargar_shapefile_zip(file_zip):
-    # Guardamos temporalmente el zip para geopandas
     with open("temp_shapefile.zip", "wb") as f:
         f.write(file_zip.getbuffer())
-
-    # geopandas puede leer shapefile dentro de zip con este formato
     try:
         gdf = gpd.read_file("zip://temp_shapefile.zip")
     except Exception as e:
@@ -18,16 +15,29 @@ def cargar_shapefile_zip(file_zip):
         return None
     return gdf
 
+def cargar_datos_eventos(file):
+    if file.type == "text/csv":
+        df = pd.read_csv(file)
+    elif file.type in ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel"]:
+        df = pd.read_excel(file)
+    else:
+        st.error("Formato no soportado. Usa CSV o XLSX.")
+        return None
+    return df
+
 def main():
     st.title("Simulador Vio-Quake")
 
-    archivo_datos = st.file_uploader("Sube archivo CSV con eventos", type=["csv"])
+    archivo_datos = st.file_uploader("Sube archivo CSV o XLSX con eventos", type=["csv", "xlsx"])
     archivo_limites = st.file_uploader("Sube ZIP con shapefile de límites administrativos", type=["zip"])
+    usar_hora = st.checkbox("Usar horas para entrenamiento y simulación", value=False)
 
     if archivo_datos and archivo_limites:
-        df = pd.read_csv(archivo_datos)
-        if 'Fecha' not in df.columns or 'Long' not in df.columns or 'Lat' not in df.columns:
-            st.error("El CSV debe contener columnas 'Fecha', 'Long' y 'Lat'")
+        df = cargar_datos_eventos(archivo_datos)
+        if df is None:
+            return
+        if not {'Fecha', 'Long', 'Lat'}.issubset(df.columns):
+            st.error("El archivo debe contener columnas 'Fecha', 'Long' y 'Lat'")
             return
         df['Fecha'] = pd.to_datetime(df['Fecha'], errors='coerce')
         df = df.dropna(subset=['Fecha', 'Long', 'Lat'])
@@ -56,7 +66,7 @@ def main():
             return
 
         st.write("Entrenando modelo GAM...")
-        modelo_gam, min_fecha_train, factor_ajuste = entrenar_modelo_gam(df, fecha_inicio_train, fecha_fin_train, usar_hora=False)
+        modelo_gam, min_fecha_train, factor_ajuste = entrenar_modelo_gam(df, fecha_inicio_train, fecha_fin_train, usar_hora=usar_hora)
         st.success("Modelo entrenado")
 
         st.write("Simulando eventos...")
@@ -76,13 +86,12 @@ def main():
             gamma=0.05,
             max_eventos=10000,
             seed=42,
-            usar_hora=False
+            usar_hora=usar_hora
         )
 
         st.write(f"Eventos simulados: {len(gdf_simulados)}")
         if not gdf_simulados.empty:
             st.map(gdf_simulados[['Lat', 'Long']])
-
         else:
             st.warning("No se generaron eventos simulados")
 
