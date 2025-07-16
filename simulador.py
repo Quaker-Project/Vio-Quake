@@ -59,6 +59,22 @@ def samplear_punto_en_poligono(poligono):
         if poligono.contains(p):
             return p.x, p.y
 
+# Eliminar filas con coordenadas faltantes
+df = df.dropna(subset=['Lat', 'Long'])
+
+# Combinar fecha y hora en una sola columna
+df['Fecha'] = pd.to_datetime(df['Fecha'] + ' ' + df['Hora'], errors='coerce')
+
+# Verifica si hay errores
+if df['Fecha'].isnull().any():
+    print("⚠️ Hay fechas que no se pudieron convertir correctamente.")
+    print(df[df['Fecha'].isnull()])
+else:
+    print("✅ Todas las fechas fueron convertidas correctamente.")
+
+
+
+
 
 def simular_eventos(df, fecha_inicio_train, fecha_fin_train,
                     fecha_inicio_sim, fecha_fin_sim,
