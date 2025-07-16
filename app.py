@@ -1,117 +1,76 @@
 import streamlit as st
 import pandas as pd
 import geopandas as gpd
-import numpy as np
-from datetime import timedelta
-from pygam import GAM, s
-from shapely.geometry import Point
-from scipy.spatial.distance import cdist
 import matplotlib.pyplot as plt
-import seaborn as sns
-import io
+import matplotlib
+from datetime import datetime
+from funciones_simulacion import entrenar_modelo_gam, simular_eventos
+import warnings
+warnings.filterwarnings("ignore")
 
-st.set_page_config(page_title="Simulador de Eventos", layout="wide")
+st.set_page_config(layout="wide")
 
-st.title("🔢 Simulador Espacio-Temporal de Eventos")
+st.title("Simulador de eventos sísmicos")
 
-st.sidebar.header("1. Cargar Datos")
-uploaded_file = st.sidebar.file_uploader("Sube un archivo .csv o .xlsx con columnas: Fecha, Hora (opcional), Long, Lat", type=['csv', 'xlsx'])
-usar_hora = st.sidebar.checkbox("🕒 ¿Incluir hora en la simulación?", value=False)
-
+# Cargar datos
 @st.cache_data
+def cargar_datos():
+    df = pd.read_csv("data/violencia.csv", parse_dates=["Fecha"])
+    gdf = gpd.read_file("data/zonas.geojson")
+    return df, gdf
 
-def cargar_datos(file):
-    if file.name.endswith('.csv'):
-        df = pd.read_csv(file)
-    else:
-        df = pd.read_excel(file)
+df, gdf_zona = cargar_datos()
 
-    # Eliminar filas sin coordenadas
-    df = df.dropna(subset=['Long', 'Lat'])
+# Mostrar mapa de eventos originales
+st.subheader("Eventos originales")
+df_map = df.rename(columns={'Lat': 'lat', 'Long': 'lon'})
+st.map(df_map[['lat', 'lon']])
 
-    # Si se usa la hora, combinar Fecha + Hora
-    if usar_hora and 'Hora' in df.columns:
-        df['Fecha'] = pd.to_datetime(df['Fecha'].astype(str) + ' ' + df['Hora'].astype(str), errors='coerce')
-    else:
-        df['Fecha'] = pd.to_datetime(df['Fecha'], errors='coerce')
+# Parámetros de entrenamiento y simulación
+st.sidebar.header("Parámetros de entrenamiento")
+fecha_min = df['Fecha'].min()
+fecha_max = df['Fecha'].max()
 
-    df = df.dropna(subset=['Fecha'])
-    return df
+fecha_inicio_train = st.sidebar.date_input("Fecha inicio entrenamiento", value=fecha_min, min_value=fecha_min, max_value=fecha_max)
+fecha_fin_train = st.sidebar.date_input("Fecha fin entrenamiento", value=fecha_max, min_value=fecha_min, max_value=fecha_max)
 
-if uploaded_file:
-    df = cargar_datos(uploaded_file)
-    st.success(f"{len(df)} eventos cargados correctamente.")
-    st.map(df[['Lat', 'Long']])
+st.sidebar.header("Parámetros de simulación")
+fecha_inicio_sim = st.sidebar.date_input("Fecha inicio simulación", value=fecha_max, min_value=fecha_min, max_value=fecha_max)
+fecha_fin_sim = st.sidebar.date_input("Fecha fin simulación", value=fecha_max, min_value=fecha_min, max_value=fecha_max)
 
-    st.sidebar.header("2. Entrenamiento del Modelo")
-    fecha_min, fecha_max = df['Fecha'].min(), df['Fecha'].max()
-    fecha_inicio = st.sidebar.date_input("Fecha inicio entrenamiento", value=fecha_min, min_value=fecha_min, max_value=fecha_max)
-    fecha_fin = st.sidebar.date_input("Fecha fin entrenamiento", value=fecha_max, min_value=fecha_min, max_value=fecha_max)
+mu_boost = st.sidebar.slider("Intensidad base (mu_boost)", 0.1, 5.0, 1.0, step=0.1)
+alpha = st.sidebar.slider("Alpha (excitación)", 0.0, 1.0, 0.5, step=0.05)
+beta = st.sidebar.slider("Beta (decaimiento temporal)", 0.01, 1.0, 0.1, step=0.01)
+gamma = st.sidebar.slider("Gamma (decaimiento espacial)", 0.01, 1.0, 0.05, step=0.01)
+max_eventos = st.sidebar.number_input("Máximo número de eventos", min_value=100, max_value=10000, value=1000, step=100)
+usar_hora = st.sidebar.checkbox("Usar precisión por hora", value=False)
+simular = st.sidebar.button("Simular")
 
-    from datetime import datetime
-    if isinstance(fecha_inicio, datetime): fecha_inicio = fecha_inicio.date()
-    if isinstance(fecha_fin, datetime): fecha_fin = fecha_fin.date()
-
-    from funciones_simulacion import entrenar_modelo_gam
-
-    gam_model, min_fecha_train, factor_ajuste = entrenar_modelo_gam(df, fecha_inicio, fecha_fin, usar_hora)
-    st.sidebar.markdown(f"**Factor ajuste:** {factor_ajuste:.2f}")
-
-    st.sidebar.header("3. Simulación")
-    fecha_inicio_sim = st.sidebar.date_input("Fecha inicio simulación", value=fecha_max + timedelta(days=1))
-    fecha_fin_sim = st.sidebar.date_input("Fecha fin simulación", value=fecha_max + timedelta(days=10))
-
-    mu_boost = st.sidebar.slider("μ Boost (Multiplicador de intensidad)", 0.1, 5.0, 1.0, 0.1)
-    alpha = st.sidebar.slider("α (Autoexcitación temporal)", 0.0, 2.0, 0.5, 0.1)
-    beta = st.sidebar.slider("β (Decaimiento temporal)", 0.01, 1.0, 0.1, 0.01)
-    gamma = st.sidebar.slider("γ (Decaimiento espacial)", 0.01, 1.0, 0.05, 0.01)
-
-    simular = st.sidebar.button("▶️ Ejecutar Simulación")
-
-    if simular:
-        # Crear polígonos artificiales (buffer de 0.01 grados)
-        from shapely.geometry import Polygon
-        buffers = [Point(xy).buffer(0.01) for xy in zip(df['Long'], df['Lat'])]
-        union = gpd.GeoSeries(buffers).unary_union
-        gdf_zona = gpd.GeoDataFrame(geometry=[union], crs="EPSG:4326").explode(index_parts=False).reset_index(drop=True)
-
-        from funciones_simulacion import simular_eventos
-        gdf_sim = simular_eventos(
-            df, fecha_inicio, fecha_fin, fecha_inicio_sim, fecha_fin_sim,
-            gdf_zona, gam_model, min_fecha_train,
-            factor_ajuste=factor_ajuste,
-            mu_boost=mu_boost,
-            alpha=alpha, beta=beta, gamma=gamma,
+if simular:
+    st.subheader("Simulación en curso...")
+    with st.spinner("Entrenando modelo y generando eventos..."):
+        modelo_gam, min_fecha, factor_ajuste = entrenar_modelo_gam(df, fecha_inicio_train, fecha_fin_train, usar_hora)
+        gdf_simulados = simular_eventos(
+            df, fecha_inicio_train, fecha_fin_train,
+            fecha_inicio_sim, fecha_fin_sim,
+            gdf_zona, modelo_gam, min_fecha,
+            factor_ajuste, mu_boost,
+            alpha, beta, gamma,
+            max_eventos, seed=42,
             usar_hora=usar_hora
         )
 
-        st.subheader("🌍 Mapa de eventos simulados")
-        st.map(gdf_sim[['Lat', 'Long']])
+    st.success(f"{len(gdf_simulados)} eventos simulados.")
+    if not gdf_simulados.empty:
+        df_sim_map = gdf_simulados.rename(columns={'Lat': 'lat', 'Long': 'lon'})
+        st.map(df_sim_map[['lat', 'lon']])
 
-        st.subheader("🔄 Comparativa de frecuencias")
-        df['tipo'] = 'real'
-        gdf_sim['tipo'] = 'simulado'
-        df_plot = pd.concat([df[['Fecha', 'tipo']], gdf_sim[['Fecha', 'tipo']]])
-
-        if usar_hora:
-            df_plot['Fecha'] = df_plot['Fecha'].dt.floor('H')
-        else:
-            df_plot['Fecha'] = df_plot['Fecha'].dt.date
-
-        resumen = df_plot.groupby(['Fecha', 'tipo']).size().reset_index(name='conteo')
-        resumen = resumen.pivot(index='Fecha', columns='tipo', values='conteo').fillna(0)
-
-        fig, ax = plt.subplots(figsize=(12, 4))
-        resumen.plot(ax=ax)
-        plt.ylabel("Eventos diarios")
+        # Mostrar histograma
+        fig, ax = plt.subplots(figsize=(10, 4))
+        gdf_simulados['Fecha'].dt.to_period("D").value_counts().sort_index().plot(kind='bar', ax=ax)
+        ax.set_title("Eventos simulados por día")
+        ax.set_xlabel("Fecha")
+        ax.set_ylabel("Nº de eventos")
         st.pyplot(fig)
-
-        st.download_button(
-            label="💾 Descargar resultados",
-            data=gdf_sim.to_csv(index=False).encode(),
-            file_name="eventos_simulados.csv",
-            mime="text/csv"
-        )
-
-else:
-    st.info("Por favor, sube un archivo para comenzar.")
+    else:
+        st.warning("No se generaron eventos en la simulación.")
