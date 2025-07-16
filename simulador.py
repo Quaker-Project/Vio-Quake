@@ -39,13 +39,12 @@ def preparar_probabilidades_poligonos(gdf_zona, df_train):
     sjoined = gpd.sjoin(gdf_train, gdf_zona, how='inner')
     conteo = sjoined.groupby('index_right').size()
 
-
     probs = np.zeros(len(gdf_zona))
     for idx, n in conteo.items():
         probs[idx] = n
 
     if probs.sum() == 0:
-        # Si no hay eventos en ningún polígono, asignar probas uniformes
+        # Si no hay eventos en ningún polígono, asignar probabilidades uniformes
         probs = np.ones(len(gdf_zona))
     probs = probs / probs.sum()
     return probs
@@ -118,6 +117,10 @@ def simular_eventos(df, fecha_inicio_train, fecha_fin_train,
             excitation = np.sum(alpha * np.exp(-beta * dt) * np.exp(-gamma * dist))
 
         intensidad_total = max(mu + excitation, 1e-6)
+
+        # Print para debug y análisis
+        print(f"t={t_candidate:.2f}, mu={mu:.6f}, excitation={excitation:.6f}, total={intensidad_total:.6f}")
+
         lambda_max = max(intensidad_total * 1.5, 1e-6)
 
         u2 = np.random.uniform()
