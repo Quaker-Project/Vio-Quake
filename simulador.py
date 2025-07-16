@@ -61,7 +61,8 @@ def simular_eventos(df, fecha_inicio_train, fecha_fin_train,
                     factor_ajuste=1.0, mu_boost=1.0,
                     alpha=0.5, beta=0.1, gamma=0.05,
                     max_eventos=10000, seed=None,
-                    usar_hora=False):
+                    usar_hora=False,
+                    tasa_base_percentil=90):
 
     if seed is not None:
         np.random.seed(seed)
@@ -70,7 +71,6 @@ def simular_eventos(df, fecha_inicio_train, fecha_fin_train,
 
     sim_events = []
 
-    # t_ini y t_fin en días
     if usar_hora:
         t_ini = 0
         t_fin = (fecha_fin_sim - fecha_inicio_sim).total_seconds() / 86400.0
@@ -81,8 +81,7 @@ def simular_eventos(df, fecha_inicio_train, fecha_fin_train,
     df_train = df[(df['Fecha'] >= fecha_inicio_train) & (df['Fecha'] <= fecha_fin_train)].copy()
     probs_poligonos = preparar_probabilidades_poligonos(gdf_zona, df_train)
 
-    # Calcular mu máximo esperado para ajustar la tasa base
-    # Muestreando aleatoriamente 100 puntos en espacio-tiempo para estimar max_mu
+    # Muestrear 100 puntos para mu estimado
     sample_t = np.linspace(t_ini, t_fin, num=100)
     sample_polygons = np.random.choice(len(gdf_zona), size=100, p=probs_poligonos)
     mus = []
@@ -91,8 +90,12 @@ def simular_eventos(df, fecha_inicio_train, fecha_fin_train,
         lon, lat = samplear_punto_en_poligono(poligono)
         mus.append(modelo_gam.predict([[sample_t[i], lon, lat]])[0])
     mus = np.array(mus) * factor_ajuste * mu_boost
-    max_mu = max(np.max(mus), 1e-6)
-    print(f"[DEBUG] max_mu estimado para simulación: {max_mu:.4f}")
+
+    # Ahora usar percentil para tasa base
+    base_mu = np.percentile(mus, tasa_base_percentil)
+    base_mu = max(base_mu, 1e-6)
+
+    print(f"[DEBUG] base_mu ({tasa_base_percentil}th perc): {base_mu:.4f}")
     print(f"[DEBUG] factor_ajuste: {factor_ajuste:.4f}, mu_boost: {mu_boost:.4f}")
 
     t = t_ini
@@ -103,8 +106,7 @@ def simular_eventos(df, fecha_inicio_train, fecha_fin_train,
             break
 
         u1 = np.random.uniform()
-        # Ajustamos tasa base de inter-eventos con max_mu estimado
-        w = -np.log(u1) / max_mu
+        w = -np.log(u1) / base_mu
         t_candidate = t + w
         if t_candidate > t_fin:
             break
@@ -146,13 +148,7 @@ def simular_eventos(df, fecha_inicio_train, fecha_fin_train,
 
         t = t_candidate
 
-    if len(sim_events) > 0:
-        mus_sim = [modelo_gam.predict([[e['t'], e['Long'], e['Lat']]])[0] for e in sim_events]
-        print(f"[DEBUG] Eventos simulados: {len(sim_events)}")
-        print(f"[DEBUG] Mu promedio en eventos simulados: {np.mean(mus_sim):.4f}")
-        print(f"[DEBUG] Mu máximo en eventos simulados: {np.max(mus_sim):.4f}")
-    else:
-        print("[DEBUG] No se simularon eventos.")
+    print(f"[DEBUG] Eventos simulados: {len(sim_events)}")
 
     df_sim = pd.DataFrame(sim_events)
     if df_sim.empty:
