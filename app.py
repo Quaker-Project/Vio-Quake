@@ -7,7 +7,6 @@ import os
 import io
 import zipfile
 
-# Estilo visual
 st.set_page_config(
     page_title="VIO-QUAKE Simulador",
     layout="wide",
@@ -17,24 +16,14 @@ st.set_page_config(
 def css_estilo():
     st.markdown("""
     <style>
-        .stApp {
-            background-color: #111111;
-            color: #EEEEEE;
-            font-family: 'Segoe UI', sans-serif;
-        }
-        .stSidebar {
-            background-color: #1c1c1c;
-        }
+        .stApp { background-color: #111; color: #EEE; font-family: 'Segoe UI', sans-serif; }
+        .stSidebar { background-color: #1c1c1c; }
         .stButton>button, .stDownloadButton>button {
-            background-color: #ff4b4b;
-            color: white;
-            border-radius: 8px;
-            padding: 0.5em 1em;
-            font-weight: bold;
+            background-color: #ff4b4b; color: white; border-radius: 8px;
+            padding: 0.5em 1em; font-weight: bold;
         }
         .stButton>button:hover, .stDownloadButton>button:hover {
-            background-color: #ff1c1c;
-            transform: scale(1.05);
+            background-color: #ff1c1c; transform: scale(1.05);
         }
     </style>
     """, unsafe_allow_html=True)
@@ -47,7 +36,7 @@ def cargar_archivo_datos(archivo):
     try:
         if archivo.name.endswith('.csv'):
             df = pd.read_csv(archivo)
-        elif archivo.name.endswith('.xls') or archivo.name.endswith('.xlsx'):
+        elif archivo.name.endswith(('.xls', '.xlsx')):
             df = pd.read_excel(archivo)
         else:
             st.error("Formato no soportado. Use CSV o Excel.")
@@ -81,7 +70,7 @@ def main():
     st.markdown("""
     **Simulación de eventos espacio-temporales con autoexcitación**
     
-    Este sistema permite simular patrones de delitos replicando comportamientos observados en los datos históricos. Ajusta parámetros en la barra lateral y lanza simulaciones.
+    Este sistema permite simular patrones de delitos replicando comportamientos observados en los datos históricos.
     """)
 
     archivo_datos = st.file_uploader("📂 Suba datos de eventos (CSV/Excel)", type=["csv", "xls", "xlsx"])
@@ -104,39 +93,16 @@ def main():
 
         usar_hora = st.sidebar.checkbox("¿Usar hora en los eventos?", value=True)
 
-        # Rango fechas en dataset
-        fecha_min = df['Fecha'].min().date()
-        fecha_max = df['Fecha'].max().date()
-        st.sidebar.write(f"📅 Rango fechas datos: {fecha_min} a {fecha_max}")
+        # Normalización de fechas para evitar errores
+        fechas_validas = df['Fecha'].dropna()
+        min_fecha = fechas_validas.min()
+        max_fecha = fechas_validas.max()
 
-        # Fechas entrenamiento: libre dentro del rango datos
-        fecha_inicio_train = st.sidebar.date_input(
-            "Fecha inicio entrenamiento",
-            value=fecha_min,
-            min_value=fecha_min,
-            max_value=fecha_max
-        )
-        fecha_fin_train = st.sidebar.date_input(
-            "Fecha fin entrenamiento",
-            value=fecha_max,
-            min_value=fecha_inicio_train,
-            max_value=fecha_max
-        )
+        fecha_inicio_train = st.sidebar.date_input("Fecha inicio entrenamiento", value=min_fecha.date(), min_value=min_fecha.date(), max_value=max_fecha.date())
+        fecha_fin_train = st.sidebar.date_input("Fecha fin entrenamiento", value=max_fecha.date(), min_value=min_fecha.date(), max_value=max_fecha.date())
 
-        # Fechas simulación: después del entrenamiento
-        fecha_inicio_sim_default = fecha_fin_train + pd.Timedelta(days=1)
-        fecha_fin_sim_default = fecha_fin_train + pd.Timedelta(days=30)
-
-        fecha_inicio_sim = st.sidebar.date_input(
-            "Fecha inicio simulación",
-            value=fecha_inicio_sim_default,
-            min_value=fecha_inicio_sim_default
-        )
-        fecha_fin_sim = st.sidebar.date_input(
-            "Fecha fin simulación",
-            value=fecha_fin_sim_default,
-            min_value=fecha_inicio_sim
-        )
+        fecha_inicio_sim = st.sidebar.date_input("Fecha inicio simulación", value=(max_fecha + pd.Timedelta(days=1)).date())
+        fecha_fin_sim = st.sidebar.date_input("Fecha fin simulación", value=(max_fecha + pd.Timedelta(days=30)).date())
 
         # Convertir fechas a datetime completos si se usa hora
         if usar_hora:
@@ -152,18 +118,18 @@ def main():
             fecha_fin_sim = pd.to_datetime(fecha_fin_sim)
 
         mu_boost = st.sidebar.slider("Multiplicador de intensidad base (mu_boost)", 0.1, 5.0, 1.0, 0.1)
-
         st.sidebar.subheader("🌐 Autoexcitación espacio-temporal")
         alpha = st.sidebar.slider("Alpha (nivel de autoexcitación)", 0.0, 2.0, 0.5, 0.1)
         beta = st.sidebar.slider("Beta (decaimiento temporal)", 0.01, 1.0, 0.1, 0.01)
         gamma = st.sidebar.slider("Gamma (decaimiento espacial)", 0.01, 1.0, 0.05, 0.01)
-
         max_eventos = st.sidebar.number_input("Máximo de eventos simulados", 100, 100000, 5000, 100)
         usar_semilla = st.sidebar.checkbox("Fijar semilla aleatoria", value=False)
 
         if st.button("🚀 Entrenar modelo y simular eventos"):
             with st.spinner("🔧 Entrenando modelo GAM espaciotemporal..."):
-                modelo_gam, min_fecha_train, factor_ajuste = entrenar_modelo_gam(df, fecha_inicio_train, fecha_fin_train)
+                modelo_gam, min_fecha_train, factor_ajuste = entrenar_modelo_gam(
+                    df, fecha_inicio_train, fecha_fin_train, usar_hora=usar_hora
+                )
                 st.info(f"Factor de ajuste automático (histórico): {factor_ajuste:.2f}")
                 st.info(f"Boost aplicado por el usuario (mu_boost): {mu_boost:.2f}")
 
@@ -175,7 +141,8 @@ def main():
                                           mu_boost=mu_boost,
                                           alpha=alpha, beta=beta, gamma=gamma,
                                           max_eventos=max_eventos,
-                                          seed=42 if usar_semilla else None)
+                                          seed=42 if usar_semilla else None,
+                                          usar_hora=usar_hora)
 
             st.success(f"✅ Simulados {len(gdf_sim)} eventos")
 
