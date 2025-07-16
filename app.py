@@ -1,181 +1,105 @@
 import streamlit as st
 import pandas as pd
 import geopandas as gpd
+import matplotlib.pyplot as plt
+import folium
+from streamlit_folium import st_folium
 from simulador import entrenar_modelo_gam, simular_eventos
-import tempfile
-import os
+from shapely.geometry import Polygon
 import io
 
-# Configuración visual
-st.set_page_config(page_title="VIO-QUAKE Simulador", layout="wide", initial_sidebar_state="expanded")
-
-def css_estilo():
-    st.markdown("""
-    <style>
-        body {
-            background-color: #111111;
-            color: #EEEEEE;
-        }
-        .stApp {
-            background-color: #111111;
-            color: #EEEEEE;
-            font-family: 'Segoe UI', sans-serif;
-        }
-        .stSidebar {
-            background-color: #1c1c1c;
-        }
-        .stButton>button, .stDownloadButton>button {
-            background-color: #ff4b4b;
-            color: white;
-            border-radius: 8px;
-            padding: 0.5em 1em;
-            font-weight: bold;
-        }
-        .stButton>button:hover, .stDownloadButton>button:hover {
-            background-color: #ff1c1c;
-            transform: scale(1.05);
-        }
-    </style>
-    """, unsafe_allow_html=True)
-
-css_estilo()
-
-def cargar_archivo_datos(archivo):
-    if archivo is None:
-        return None
-    try:
-        if archivo.name.endswith('.csv'):
-            df = pd.read_csv(archivo)
-        elif archivo.name.endswith(('.xls', '.xlsx')):
-            df = pd.read_excel(archivo)
-        else:
-            st.error("Formato no soportado. Use CSV o Excel.")
-            return None
-    except Exception as e:
-        st.error(f"Error cargando archivo: {e}")
-        return None
-    return df
-
-def cargar_shapefile_zip(archivo_zip):
-    if archivo_zip is None:
-        return None
-    import zipfile
-    with tempfile.TemporaryDirectory() as tmpdir:
-        try:
-            with zipfile.ZipFile(archivo_zip) as z:
-                z.extractall(tmpdir)
-            shp_files = [f for f in os.listdir(tmpdir) if f.endswith('.shp')]
-            if len(shp_files) != 1:
-                st.error("El ZIP debe contener un único archivo .shp")
-                return None
-            gdf = gpd.read_file(os.path.join(tmpdir, shp_files[0]))
-            return gdf
-        except Exception as e:
-            st.error(f"Error leyendo shapefile ZIP: {e}")
-            return None
+st.set_page_config(page_title="Simulador de Eventos", layout="wide")
 
 def main():
-    st.title("🧨 VIO-QUAKE | Simulador de Eventos Delictivos Basado en Procesos Hawkes")
+    st.title("🔁 Simulador Espaciotemporal de Eventos")
 
-    st.markdown("""
-    **Simulación de eventos espacio-temporales con autoexcitación**
+    st.sidebar.header("1. Subir archivos")
+    archivo_datos = st.sidebar.file_uploader("📄 Datos históricos (.csv)", type=["csv"])
+    archivo_zona = st.sidebar.file_uploader("📐 Zona de simulación (.geojson)", type=["geojson", "json"])
 
-    Este sistema permite simular patrones de delitos replicando comportamientos observados en los datos históricos. Ajusta parámetros en la barra lateral y lanza simulaciones.
-    """)
+    tiene_hora = st.sidebar.checkbox("¿Los datos incluyen hora?", value=False)
 
-    archivo_datos = st.file_uploader("📂 Suba datos de eventos (CSV/Excel)", type=["csv", "xls", "xlsx"])
-    df = cargar_archivo_datos(archivo_datos)
+    if archivo_datos and archivo_zona:
+        df = pd.read_csv(archivo_datos)
 
-    incluye_hora = False
-    if df is not None and 'Hora' in df.columns:
-        incluye_hora = st.checkbox("¿El dataset incluye columna de hora?", value=True)
-
-    archivo_zip = st.file_uploader("📍 Suba shapefile ZIP de zona (área de simulación)", type=["zip"])
-    gdf_zona = cargar_shapefile_zip(archivo_zip)
-
-    if df is not None:
-        columnas_requeridas = ['Fecha', 'Lat', 'Long']
-        if not all(col in df.columns for col in columnas_requeridas):
-            st.error(f"Faltan columnas obligatorias: {columnas_requeridas}")
+        if 'Long' not in df.columns or 'Lat' not in df.columns or 'Fecha' not in df.columns:
+            st.error("❌ El archivo CSV debe tener columnas llamadas 'Long', 'Lat' y 'Fecha'.")
             return
 
         df['Fecha'] = pd.to_datetime(df['Fecha'], errors='coerce')
-        if incluye_hora:
-            if 'Hora' not in df.columns:
-                st.error("Se indicó que hay hora, pero falta la columna 'Hora'")
-                return
-            df['Hora'] = pd.to_timedelta(df['Hora'].astype(str))
-            df['FechaHora'] = df['Fecha'] + df['Hora']
-        else:
-            df['FechaHora'] = df['Fecha']
 
-        if df['FechaHora'].isnull().any():
-            st.error("Fechas/Horas mal formateadas. Corríjalas.")
-            return
+        if not tiene_hora:
+            df['Fecha'] = df['Fecha'].dt.normalize()
 
-    if df is not None and gdf_zona is not None:
-        st.sidebar.header("⚙️ Configuración de simulación")
+        if tiene_hora and (df['Fecha'].dt.hour == 0).all():
+            st.warning("⚠️ Los datos parecen no tener información horaria, aunque se activó esa opción.")
 
-        fecha_min = df['FechaHora'].min().date()
-        fecha_max = df['FechaHora'].max().date()
+        gdf_zona = gpd.read_file(archivo_zona)
 
-        fecha_inicio_train = st.sidebar.date_input("Fecha inicio entrenamiento", value=fecha_min)
-        fecha_fin_train = st.sidebar.date_input("Fecha fin entrenamiento", value=fecha_max)
+        st.sidebar.header("2. Configurar periodo de entrenamiento")
+        fecha_min = df['Fecha'].min().date()
+        fecha_max = df['Fecha'].max().date()
+        fecha_inicio_train = st.sidebar.date_input("📅 Fecha inicio entrenamiento", fecha_min, min_value=fecha_min, max_value=fecha_max)
+        fecha_fin_train = st.sidebar.date_input("📅 Fecha fin entrenamiento", fecha_max, min_value=fecha_min, max_value=fecha_max)
 
-        fecha_inicio_sim = st.sidebar.date_input("Fecha inicio simulación", value=fecha_max + pd.Timedelta(days=1))
-        fecha_fin_sim = st.sidebar.date_input("Fecha fin simulación", value=fecha_max + pd.Timedelta(days=30))
+        st.sidebar.header("3. Configurar simulación")
+        fecha_inicio_sim = st.sidebar.date_input("🟢 Fecha inicio simulación", fecha_max + pd.Timedelta(days=1))
+        fecha_fin_sim = st.sidebar.date_input("🔴 Fecha fin simulación", fecha_max + pd.Timedelta(days=10))
 
-        mu_boost = st.sidebar.slider("Multiplicador de intensidad base (mu_boost)", min_value=0.1, max_value=5.0, value=1.0, step=0.1)
+        mu_boost = st.sidebar.slider("📈 Intensidad base (mu_boost)", 0.1, 5.0, 1.0, 0.1)
+        alpha = st.sidebar.slider("📊 Alpha (auto-excitación)", 0.0, 1.0, 0.5, 0.01)
+        beta = st.sidebar.slider("⏱️ Beta (decay temporal)", 0.01, 1.0, 0.1, 0.01)
+        gamma = st.sidebar.slider("📍 Gamma (decay espacial)", 0.01, 1.0, 0.05, 0.01)
 
-        st.sidebar.subheader("🌐 Autoexcitación espacio-temporal")
-        alpha = st.sidebar.slider("Alpha (autoexcitación)", 0.0, 2.0, 0.5, 0.1)
-        beta = st.sidebar.slider("Beta (decaimiento temporal)", 0.01, 1.0, 0.1, 0.01)
-        gamma = st.sidebar.slider("Gamma (decaimiento espacial)", 0.01, 1.0, 0.05, 0.01)
+        max_eventos = st.sidebar.number_input("🔢 Límite máximo de eventos", min_value=1000, max_value=50000, value=10000, step=1000)
+        usar_semilla = st.sidebar.checkbox("🎲 Usar semilla fija", value=True)
 
-        max_eventos = st.sidebar.number_input("Máximo de eventos simulados", min_value=100, max_value=100000, value=5000, step=100)
-        usar_semilla = st.sidebar.checkbox("Fijar semilla aleatoria", value=False)
+        if st.sidebar.button("▶️ Iniciar simulación"):
+            st.subheader("🔄 Entrenando modelo...")
+            modelo_gam, min_fecha_train, factor_ajuste = entrenar_modelo_gam(
+                df, fecha_inicio_train, fecha_fin_train, usar_hora=tiene_hora)
 
-        if st.button("🚀 Entrenar modelo y simular eventos"):
-            with st.spinner("🔧 Entrenando modelo GAM espaciotemporal..."):
-                modelo_gam, min_fecha_train, factor_ajuste = entrenar_modelo_gam(
-                    df.rename(columns={'FechaHora': 'Fecha'}), fecha_inicio_train, fecha_fin_train
-                )
-                st.info(f"Factor de ajuste: {factor_ajuste:.2f} | mu_boost: {mu_boost:.2f}")
-
-            with st.spinner("🎲 Simulando eventos..."):
-                gdf_sim = simular_eventos(
-                    df.rename(columns={'FechaHora': 'Fecha'}),
-                    fecha_inicio_train, fecha_fin_train,
-                    fecha_inicio_sim, fecha_fin_sim,
-                    gdf_zona, modelo_gam, min_fecha_train,
-                    factor_ajuste=factor_ajuste,
-                    mu_boost=mu_boost,
-                    alpha=alpha, beta=beta, gamma=gamma,
-                    max_eventos=max_eventos,
-                    seed=42 if usar_semilla else None
-                )
-
-            st.success(f"✅ Simulados {len(gdf_sim)} eventos")
-
-            # Exportar
-            gdf_sim_wgs84 = gdf_sim.to_crs(epsg=4326)
-            df_export = gdf_sim_wgs84[['geometry', 'Fecha']].copy()
-            df_export['Long'] = df_export.geometry.x
-            df_export['Lat'] = df_export.geometry.y
-            df_export = df_export.drop(columns='geometry')
-            df_export = df_export[['Long', 'Lat', 'Fecha']]
-
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                df_export.to_excel(writer, index=False)
-            output.seek(0)
-
-            st.download_button(
-                label="📥 Descargar Excel con eventos simulados",
-                data=output,
-                file_name="eventos_simulados.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            st.subheader("🛠️ Ejecutando simulación...")
+            gdf_sim = simular_eventos(
+                df, fecha_inicio_train, fecha_fin_train,
+                fecha_inicio_sim, fecha_fin_sim,
+                gdf_zona, modelo_gam, min_fecha_train,
+                factor_ajuste=factor_ajuste,
+                mu_boost=mu_boost,
+                alpha=alpha, beta=beta, gamma=gamma,
+                max_eventos=max_eventos,
+                seed=42 if usar_semilla else None,
+                usar_hora=tiene_hora
             )
+
+            if gdf_sim.empty:
+                st.error("⚠️ No se generaron eventos simulados. Revisa los parámetros.")
+                return
+
+            st.success(f"✅ Se generaron {len(gdf_sim)} eventos simulados.")
+
+            st.subheader("📍 Mapa de eventos simulados")
+
+            centroide = gdf_zona.geometry.unary_union.centroid
+            m = folium.Map(location=[centroide.y, centroide.x], zoom_start=12)
+
+            folium.GeoJson(gdf_zona).add_to(m)
+
+            for _, row in gdf_sim.iterrows():
+                folium.CircleMarker(
+                    location=[row.geometry.y, row.geometry.x],
+                    radius=3,
+                    color='red',
+                    fill=True,
+                    fill_opacity=0.6
+                ).add_to(m)
+
+            st_data = st_folium(m, width=700, height=500)
+
+            st.subheader("📥 Descargar resultados")
+            buffer = io.StringIO()
+            gdf_sim.drop(columns='geometry').to_csv(buffer, index=False)
+            st.download_button("⬇️ Descargar CSV", buffer.getvalue(), file_name="eventos_simulados.csv", mime="text/csv")
 
 if __name__ == "__main__":
     main()
