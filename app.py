@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import geopandas as gpd
-import matplotlib.pyplot as plt
 from datetime import datetime
 from simulador import entrenar_modelo_gam, simular_eventos
 
