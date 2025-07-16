@@ -1,40 +1,70 @@
-import numpy as np
 import pandas as pd
 import geopandas as gpd
-from scipy.spatial.distance import cdist
+import numpy as np
 from datetime import timedelta
+from pygam import GAM, s
+from shapely.geometry import Point
+from shapely.ops import unary_union
+from scipy.spatial.distance import cdist
+import warnings
+warnings.filterwarnings("ignore")
+
+
+def entrenar_modelo_gam(df, fecha_inicio, fecha_fin):
+    df_train = df[(df['Fecha'] >= pd.to_datetime(fecha_inicio)) &
+                  (df['Fecha'] <= pd.to_datetime(fecha_fin))].copy()
+    df_train = df_train.dropna(subset=['Long', 'Lat', 'Fecha'])
+
+    min_fecha = df_train['Fecha'].min()
+    df_train['t'] = (df_train['Fecha'] - min_fecha).dt.total_seconds() / 86400.0
+
+    X = df_train[['t', 'Long', 'Lat']].values
+    y = np.ones(len(df_train))
+
+    gam = GAM(s(0) + s(1) + s(2), verbose=False).fit(X, y)
+
+    pred_mu = gam.predict(X)
+    total_predicho = np.sum(pred_mu)
+    total_real = len(df_train)
+    factor_ajuste = total_real / total_predicho if total_predicho > 0 else 1.0
+
+    return gam, min_fecha, factor_ajuste
+
 
 def preparar_probabilidades_poligonos(gdf_zona, df_train):
-    conteos = gdf_zona.copy()
-    conteos['conteo'] = 0
+    gdf_train = gpd.GeoDataFrame(df_train,
+                                  geometry=gpd.points_from_xy(df_train['Long'], df_train['Lat']),
+                                  crs=gdf_zona.crs)
 
-    for idx, poligono in conteos.iterrows():
-        puntos_en_poligono = df_train[df_train.geometry.within(poligono.geometry)]
-        conteos.at[idx, 'conteo'] = len(puntos_en_poligono)
+    sjoined = gpd.sjoin(gdf_train, gdf_zona, how='inner')
+    conteo = sjoined.groupby('index_right').size()
 
-    total_eventos = conteos['conteo'].sum()
-    if total_eventos == 0:
-        # Si no hay eventos, asignar probabilidad uniforme
-        return np.ones(len(gdf_zona)) / len(gdf_zona)
 
-    return conteos['conteo'].values / total_eventos
+    probs = np.zeros(len(gdf_zona))
+    for idx, n in conteo.items():
+        probs[idx] = n
+
+    if probs.sum() == 0:
+        # Si no hay eventos en ningún polígono, asignar probas uniformes
+        probs = np.ones(len(gdf_zona))
+    probs = probs / probs.sum()
+    return probs
+
 
 def samplear_punto_en_poligono(poligono):
     minx, miny, maxx, maxy = poligono.bounds
     while True:
-        x = np.random.uniform(minx, maxx)
-        y = np.random.uniform(miny, maxy)
-        punto = gpd.points_from_xy([x], [y])[0]
-        if poligono.contains(punto):
-            return x, y
+        p = Point(np.random.uniform(minx, maxx), np.random.uniform(miny, maxy))
+        if poligono.contains(p):
+            return p.x, p.y
+
 
 def simular_eventos(df, fecha_inicio_train, fecha_fin_train,
                     fecha_inicio_sim, fecha_fin_sim,
                     gdf_zona, modelo_gam, min_fecha_train,
                     factor_ajuste=1.0, mu_boost=1.0,
                     alpha=0.5, beta=0.1, gamma=0.05,
-                    max_eventos=10000, seed=None,
-                    usar_hora=False):
+                    max_eventos=10000, seed=None):
 
     if seed is not None:
         np.random.seed(seed)
@@ -43,30 +73,13 @@ def simular_eventos(df, fecha_inicio_train, fecha_fin_train,
 
     sim_events = []
 
-    # Definir escala temporal según usar_hora
-    if usar_hora:
-        escala_temporal = 'segundos'
-        unidad_tiempo = 1.0  # segundos normalizados a días
-    else:
-        escala_temporal = 'días'
-        unidad_tiempo = 86400.0  # segundos por día
-
-    # Convertir fechas a datetime si no lo están
-    df['Fecha'] = pd.to_datetime(df['Fecha'])
-    fecha_inicio_train = pd.to_datetime(fecha_inicio_train)
-    fecha_fin_train = pd.to_datetime(fecha_fin_train)
-    fecha_inicio_sim = pd.to_datetime(fecha_inicio_sim)
-    fecha_fin_sim = pd.to_datetime(fecha_fin_sim)
+    t_ini = 0
+    t_fin = max(1, (pd.to_datetime(fecha_fin_sim) - pd.to_datetime(fecha_inicio_sim)).days + 1)
 
     # Prepara probabilidades por polígono
-    df_train = df[(df['Fecha'] >= fecha_inicio_train) & (df['Fecha'] <= fecha_fin_train)].copy()
+    df_train = df[(df['Fecha'] >= pd.to_datetime(fecha_inicio_train)) &
+                  (df['Fecha'] <= pd.to_datetime(fecha_fin_train))].copy()
     probs_poligonos = preparar_probabilidades_poligonos(gdf_zona, df_train)
-
-    t_ini = 0.0
-    if usar_hora:
-        t_fin = (fecha_fin_sim - fecha_inicio_sim).total_seconds()
-    else:
-        t_fin = (fecha_fin_sim - fecha_inicio_sim).days + 1
 
     t = t_ini
 
@@ -76,28 +89,19 @@ def simular_eventos(df, fecha_inicio_train, fecha_fin_train,
             break
 
         u1 = np.random.uniform()
-        w = -np.log(u1) / 30.0  # parámetro base Poisson
-
+        w = -np.log(u1) / 30.0
         t_candidate = t + w
         if t_candidate > t_fin:
             break
 
-        if usar_hora:
-            fecha_sim = fecha_inicio_sim + timedelta(seconds=t_candidate)
-        else:
-            fecha_sim = fecha_inicio_sim + timedelta(days=t_candidate)
+        fecha_sim = pd.to_datetime(fecha_inicio_sim) + timedelta(days=t_candidate)
 
         # Selección de polígono según conteo histórico
         idx_poligono = np.random.choice(len(gdf_zona), p=probs_poligonos)
         poligono = gdf_zona.iloc[idx_poligono].geometry
         lon, lat = samplear_punto_en_poligono(poligono)
 
-        # Normalizar tiempo para el GAM
-        if usar_hora:
-            t_norm = (fecha_sim - min_fecha_train).total_seconds() / unidad_tiempo
-        else:
-            t_norm = (fecha_sim - min_fecha_train).total_seconds() / 86400.0
-
+        t_norm = (fecha_sim - min_fecha_train).total_seconds() / 86400.0
         mu = modelo_gam.predict([[t_norm, lon, lat]])[0]
         mu = max(mu * factor_ajuste * mu_boost, 1e-6)
 
@@ -130,43 +134,3 @@ def simular_eventos(df, fecha_inicio_train, fecha_fin_train,
                                geometry=gpd.points_from_xy(df_sim['Long'], df_sim['Lat']),
                                crs=gdf_zona.crs)
     return gdf_sim
-
-
-import streamlit as st
-import pandas as pd
-import numpy as np
-from simulador import entrenar_modelo_gam, simular_eventos
-
-st.title("Simulador de Violencia de Género")
-
-# Sidebar - Parámetros del modelo
-st.sidebar.header("Configuración del Modelo")
-tamano_muestra = st.sidebar.slider("Tamaño de la muestra", 100, 10000, 500)
-np.random.seed(123)
-
-# Generar datos sintéticos (puedes sustituir esto por tus datos reales si los tienes)
-datos = pd.DataFrame({
-    'edad_agresor': np.random.normal(35, 10, tamano_muestra),
-    'orden_alejamiento': np.random.choice([0, 1], tamano_muestra),
-    'denuncias_previas': np.random.poisson(1, tamano_muestra),
-    'tipo_maltrato': np.random.choice(['físico', 'psicológico', 'sexual'], tamano_muestra),
-    'reincidencia': np.random.choice([0, 1], tamano_muestra)
-})
-
-# Entrenar el modelo GAM
-st.write("### Datos de entrenamiento")
-st.dataframe(datos.head())
-
-modelo, datos, variables = entrenar_modelo_gam(datos)
-
-st.sidebar.header("Simulación de Nuevos Eventos")
-n_sim = st.sidebar.slider("Número de simulaciones", 10, 1000, 100)
-
-if st.sidebar.button("Simular eventos futuros"):
-    nuevos_eventos = simular_eventos(modelo, datos, variables, n_sim)
-    
-    st.write("### Nuevos eventos simulados")
-    st.dataframe(nuevos_eventos)
-
-    st.write("### Distribución de reincidencias simuladas")
-    st.bar_chart(nuevos_eventos['reincidencia'].value_counts())
