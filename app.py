@@ -58,6 +58,17 @@ def cargar_archivo_datos(archivo):
         st.error(f"Error cargando archivo: {e}")
         return None
 
+if df is not None:
+    if 'Fecha' in df.columns:
+        fechas_invalidas = df['Fecha'].isna().sum()
+        if fechas_invalidas > 0:
+            st.warning(f"⚠️ Se encontraron {fechas_invalidas} fechas no válidas que han sido eliminadas del análisis.")
+        df = df.dropna(subset=['Fecha'])
+        st.info(f"🗓️ Rango de fechas válidas: {df['Fecha'].min()} → {df['Fecha'].max()}")
+    else:
+        st.error("❌ La columna 'Fecha' no está presente en el archivo.")
+
+
 def cargar_shapefile_zip(archivo_zip):
     if archivo_zip is None:
         return None
