@@ -1,7 +1,9 @@
 import streamlit as st
 import pandas as pd
 import geopandas as gpd
-from simulador import entrenar_modelo_gam, simular_eventos
+from vioquake.modelo import entrenar_modelo_gam
+from vioquake.simulacion import simular_eventos
+from vioquake.utils import cargar_archivo_datos, cargar_shapefile_zip
 import tempfile
 import os
 import io
@@ -27,40 +29,6 @@ def css_estilo():
     """, unsafe_allow_html=True)
 
 css_estilo()
-
-def cargar_archivo_datos(archivo):
-    if archivo is None:
-        return None
-    try:
-        if archivo.name.endswith('.csv'):
-            df = pd.read_csv(archivo)
-        elif archivo.name.endswith('.xls') or archivo.name.endswith('.xlsx'):
-            df = pd.read_excel(archivo)
-        else:
-            st.error("Formato no soportado. Use CSV o Excel.")
-            return None
-    except Exception as e:
-        st.error(f"Error cargando archivo: {e}")
-        return None
-    return df
-
-def cargar_shapefile_zip(archivo_zip):
-    if archivo_zip is None:
-        return None
-    import zipfile
-    with tempfile.TemporaryDirectory() as tmpdir:
-        try:
-            with zipfile.ZipFile(archivo_zip) as z:
-                z.extractall(tmpdir)
-            shp_files = [f for f in os.listdir(tmpdir) if f.endswith('.shp')]
-            if len(shp_files) != 1:
-                st.error("El ZIP debe contener un único archivo .shp")
-                return None
-            gdf = gpd.read_file(os.path.join(tmpdir, shp_files[0]))
-            return gdf
-        except Exception as e:
-            st.error(f"Error leyendo shapefile ZIP: {e}")
-            return None
 
 def main():
     st.title("🧨 VIO-QUAKE | Simulador de Eventos Delictivos Multirréplica")
