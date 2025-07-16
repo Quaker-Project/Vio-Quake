@@ -81,6 +81,20 @@ def simular_eventos(df, fecha_inicio_train, fecha_fin_train,
     df_train = df[(df['Fecha'] >= fecha_inicio_train) & (df['Fecha'] <= fecha_fin_train)].copy()
     probs_poligonos = preparar_probabilidades_poligonos(gdf_zona, df_train)
 
+    # Calcular mu máximo esperado para ajustar la tasa base
+    # Muestreando aleatoriamente 100 puntos en espacio-tiempo para estimar max_mu
+    sample_t = np.linspace(t_ini, t_fin, num=100)
+    sample_polygons = np.random.choice(len(gdf_zona), size=100, p=probs_poligonos)
+    mus = []
+    for i in range(100):
+        poligono = gdf_zona.iloc[sample_polygons[i]].geometry
+        lon, lat = samplear_punto_en_poligono(poligono)
+        mus.append(modelo_gam.predict([[sample_t[i], lon, lat]])[0])
+    mus = np.array(mus) * factor_ajuste * mu_boost
+    max_mu = max(np.max(mus), 1e-6)
+    print(f"[DEBUG] max_mu estimado para simulación: {max_mu:.4f}")
+    print(f"[DEBUG] factor_ajuste: {factor_ajuste:.4f}, mu_boost: {mu_boost:.4f}")
+
     t = t_ini
 
     while t < t_fin:
@@ -89,7 +103,8 @@ def simular_eventos(df, fecha_inicio_train, fecha_fin_train,
             break
 
         u1 = np.random.uniform()
-        w = -np.log(u1) / 30.0
+        # Ajustamos tasa base de inter-eventos con max_mu estimado
+        w = -np.log(u1) / max_mu
         t_candidate = t + w
         if t_candidate > t_fin:
             break
@@ -130,6 +145,14 @@ def simular_eventos(df, fecha_inicio_train, fecha_fin_train,
             sim_events.append({'Fecha': fecha_sim, 'Long': lon, 'Lat': lat, 't': t_candidate})
 
         t = t_candidate
+
+    if len(sim_events) > 0:
+        mus_sim = [modelo_gam.predict([[e['t'], e['Long'], e['Lat']]])[0] for e in sim_events]
+        print(f"[DEBUG] Eventos simulados: {len(sim_events)}")
+        print(f"[DEBUG] Mu promedio en eventos simulados: {np.mean(mus_sim):.4f}")
+        print(f"[DEBUG] Mu máximo en eventos simulados: {np.max(mus_sim):.4f}")
+    else:
+        print("[DEBUG] No se simularon eventos.")
 
     df_sim = pd.DataFrame(sim_events)
     if df_sim.empty:
