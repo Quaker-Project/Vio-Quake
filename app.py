@@ -58,17 +58,6 @@ def cargar_archivo_datos(archivo):
         st.error(f"Error cargando archivo: {e}")
         return None
 
-if df is not None:
-    if 'Fecha' in df.columns:
-        fechas_invalidas = df['Fecha'].isna().sum()
-        if fechas_invalidas > 0:
-            st.warning(f"⚠️ Se encontraron {fechas_invalidas} fechas no válidas que han sido eliminadas del análisis.")
-        df = df.dropna(subset=['Fecha'])
-        st.info(f"🗓️ Rango de fechas válidas: {df['Fecha'].min()} → {df['Fecha'].max()}")
-    else:
-        st.error("❌ La columna 'Fecha' no está presente en el archivo.")
-
-
 def cargar_shapefile_zip(archivo_zip):
     if archivo_zip is None:
         return None
@@ -98,6 +87,18 @@ def main():
     archivo_datos = st.file_uploader("📂 Suba datos de eventos (CSV/Excel)", type=["csv", "xls", "xlsx"])
     df = cargar_archivo_datos(archivo_datos)
 
+    # Validación de fechas inválidas y filtrado
+    if df is not None:
+        if 'Fecha' in df.columns:
+            fechas_invalidas = df['Fecha'].isna().sum()
+            if fechas_invalidas > 0:
+                st.warning(f"⚠️ Se encontraron {fechas_invalidas} fechas no válidas que han sido eliminadas del análisis.")
+            df = df.dropna(subset=['Fecha'])
+            st.info(f"🗓️ Rango de fechas válidas: {df['Fecha'].min()} → {df['Fecha'].max()}")
+        else:
+            st.error("❌ La columna 'Fecha' no está presente en el archivo.")
+            return
+
     archivo_zip = st.file_uploader("📍 Suba shapefile ZIP de zona (área de simulación)", type=["zip"])
     gdf_zona = cargar_shapefile_zip(archivo_zip)
 
@@ -106,20 +107,24 @@ def main():
         if not all(col in df.columns for col in cols_requeridas):
             st.error(f"Faltan columnas requeridas: {cols_requeridas}")
             return
-        if df['Fecha'].isnull().any():
-            st.error("Existen fechas no convertibles. Corrija el archivo.")
-            return
 
     if df is not None and gdf_zona is not None:
         st.sidebar.header("⚙️ Configuración de simulación")
 
         usar_hora = st.sidebar.checkbox("¿Usar hora en los eventos?", value=True)
 
-        fecha_inicio_train = st.sidebar.date_input("Fecha inicio entrenamiento", value=df['Fecha'].min().date())
-        fecha_fin_train = st.sidebar.date_input("Fecha fin entrenamiento", value=df['Fecha'].max().date())
+        # Usar las fechas mínimas y máximas válidas para las opciones de selección
+        fecha_min = df['Fecha'].min().date()
+        fecha_max = df['Fecha'].max().date()
 
-        fecha_inicio_sim = st.sidebar.date_input("Fecha inicio simulación", value=df['Fecha'].max().date() + pd.Timedelta(days=1))
-        fecha_fin_sim = st.sidebar.date_input("Fecha fin simulación", value=df['Fecha'].max().date() + pd.Timedelta(days=30))
+        fecha_inicio_train = st.sidebar.date_input("Fecha inicio entrenamiento", value=fecha_min, min_value=fecha_min, max_value=fecha_max)
+        fecha_fin_train = st.sidebar.date_input("Fecha fin entrenamiento", value=fecha_max, min_value=fecha_min, max_value=fecha_max)
+
+        fecha_inicio_sim_default = fecha_max + pd.Timedelta(days=1)
+        fecha_fin_sim_default = fecha_max + pd.Timedelta(days=30)
+
+        fecha_inicio_sim = st.sidebar.date_input("Fecha inicio simulación", value=fecha_inicio_sim_default, min_value=fecha_inicio_sim_default)
+        fecha_fin_sim = st.sidebar.date_input("Fecha fin simulación", value=fecha_fin_sim_default, min_value=fecha_inicio_sim_default)
 
         # Convertir fechas a datetime completos si se usa hora
         if usar_hora:
