@@ -1,6 +1,11 @@
-streamlit
+streamlit==1.29.0
+pandas
+geopandas
+shapely
+scikit-learn
+pygam==0.8.0
+scipy==1.10.1
 folium
 streamlit-folium
-geopandas
-pandas
-matplotlib
+openpyxl
+xlsxwriter
