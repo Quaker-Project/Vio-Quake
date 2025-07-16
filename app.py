@@ -117,14 +117,26 @@ def main():
             return
 
         # Casilla para indicar si hay hora en el campo Fecha
-        usar_hora = st.checkbox("¿La columna 'Fecha' incluye hora?", value=True)
+        usar_hora = st.checkbox("¿Incluir la hora de los eventos?", value=False)
 
-        # Convertir fechas con distintos formatos
-        df['Fecha'] = pd.to_datetime(df['Fecha'], errors='coerce', infer_datetime_format=True)
+if usar_hora:
+    if 'Hora' not in df.columns:
+        st.error("Seleccionaste usar hora, pero no existe la columna 'Hora'. Añádela con formato HH:MM:SS.")
+        return
 
-        if df['Fecha'].isnull().any():
-            st.error("Hay fechas no convertibles en la columna 'Fecha'. Corríjalas.")
-            return
+    try:
+        df['Hora'] = pd.to_datetime(df['Hora'], format='%H:%M:%S').dt.time
+        df['Fecha'] = pd.to_datetime(df['Fecha'].astype(str) + ' ' + df['Hora'].astype(str))
+    except Exception as e:
+        st.error(f"Error procesando columnas 'Fecha' y 'Hora': {e}")
+        return
+else:
+    df['Fecha'] = pd.to_datetime(df['Fecha'], errors='coerce', infer_datetime_format=True)
+
+if df['Fecha'].isnull().any():
+    st.error("Hay fechas no convertibles en la columna 'Fecha'. Corríjalas.")
+    return
+
 
     if df is not None and gdf_zona is not None:
         st.sidebar.header("⚙️ Configuración de simulación")
