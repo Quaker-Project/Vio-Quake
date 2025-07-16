@@ -7,7 +7,6 @@ from shapely.geometry import Point
 from shapely.ops import unary_union
 from scipy.spatial.distance import cdist
 import warnings
-
 warnings.filterwarnings("ignore")
 
 
@@ -17,11 +16,10 @@ def entrenar_modelo_gam(df, fecha_inicio, fecha_fin, usar_hora=False):
     df_train = df_train.dropna(subset=['Long', 'Lat', 'Fecha'])
 
     min_fecha = df_train['Fecha'].min()
-
     if usar_hora:
-        df_train['t'] = (df_train['Fecha'] - min_fecha).dt.total_seconds() / 86400.0
+        df_train['t'] = (df_train['Fecha'] - min_fecha).dt.total_seconds() / 86400.0  # días con fracción
     else:
-        df_train['t'] = (df_train['Fecha'].dt.normalize() - min_fecha.normalize()).dt.total_seconds() / 86400.0
+        df_train['t'] = (df_train['Fecha'] - min_fecha).dt.days  # días enteros
 
     X = df_train[['t', 'Long', 'Lat']].values
     y = np.ones(len(df_train))
@@ -67,7 +65,7 @@ def simular_eventos(df, fecha_inicio_train, fecha_fin_train,
                     gdf_zona, modelo_gam, min_fecha_train,
                     factor_ajuste=1.0, mu_boost=1.0,
                     alpha=0.5, beta=0.1, gamma=0.05,
-                    max_eventos=10000, usar_hora=False, seed=None):
+                    max_eventos=10000, seed=None, usar_hora=False):
 
     if seed is not None:
         np.random.seed(seed)
@@ -76,9 +74,14 @@ def simular_eventos(df, fecha_inicio_train, fecha_fin_train,
 
     sim_events = []
 
-    t_ini = 0
-    t_fin = max(1e-3, (pd.to_datetime(fecha_fin_sim) - pd.to_datetime(fecha_inicio_sim)).total_seconds() / 86400.0)
+    if usar_hora:
+        t_ini = 0
+        t_fin = max(1.0, (pd.to_datetime(fecha_fin_sim) - pd.to_datetime(fecha_inicio_sim)).total_seconds() / 86400.0)
+    else:
+        t_ini = 0
+        t_fin = max(1, (pd.to_datetime(fecha_fin_sim) - pd.to_datetime(fecha_inicio_sim)).days + 1)
 
+    # Prepara probabilidades por polígono
     df_train = df[(df['Fecha'] >= pd.to_datetime(fecha_inicio_train)) &
                   (df['Fecha'] <= pd.to_datetime(fecha_fin_train))].copy()
     probs_poligonos = preparar_probabilidades_poligonos(gdf_zona, df_train)
@@ -91,22 +94,30 @@ def simular_eventos(df, fecha_inicio_train, fecha_fin_train,
             break
 
         u1 = np.random.uniform()
-        w = -np.log(u1) / 30.0
+        w = -np.log(u1) / 30.0  # tiempo entre eventos
         t_candidate = t + w
         if t_candidate > t_fin:
             break
 
-        fecha_sim = pd.to_datetime(fecha_inicio_sim) + timedelta(days=t_candidate)
+        if usar_hora:
+            fecha_sim = pd.to_datetime(fecha_inicio_sim) + pd.to_timedelta(t_candidate, unit='D')
+        else:
+            fecha_sim = pd.to_datetime(fecha_inicio_sim) + timedelta(days=int(t_candidate))
 
+        # Selección de polígono según conteo histórico
         idx_poligono = np.random.choice(len(gdf_zona), p=probs_poligonos)
         poligono = gdf_zona.iloc[idx_poligono].geometry
         lon, lat = samplear_punto_en_poligono(poligono)
 
-        t_norm = (fecha_sim - min_fecha_train).total_seconds() / 86400.0
+        if usar_hora:
+            t_norm = (fecha_sim - min_fecha_train).total_seconds() / 86400.0
+        else:
+            t_norm = (fecha_sim - min_fecha_train).days
 
         mu = modelo_gam.predict([[t_norm, lon, lat]])[0]
         mu = max(mu * factor_ajuste * mu_boost, 1e-6)
 
+        # Autoexcitación espacio-temporal
         excitation = 0.0
         if sim_events:
             eventos_previos = np.array([[e['t'], e['Long'], e['Lat']] for e in sim_events])
