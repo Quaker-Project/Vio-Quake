@@ -130,3 +130,43 @@ def simular_eventos(df, fecha_inicio_train, fecha_fin_train,
                                geometry=gpd.points_from_xy(df_sim['Long'], df_sim['Lat']),
                                crs=gdf_zona.crs)
     return gdf_sim
+
+
+import streamlit as st
+import pandas as pd
+import numpy as np
+from simulador import entrenar_modelo_gam, simular_eventos
+
+st.title("Simulador de Violencia de Género")
+
+# Sidebar - Parámetros del modelo
+st.sidebar.header("Configuración del Modelo")
+tamano_muestra = st.sidebar.slider("Tamaño de la muestra", 100, 10000, 500)
+np.random.seed(123)
+
+# Generar datos sintéticos (puedes sustituir esto por tus datos reales si los tienes)
+datos = pd.DataFrame({
+    'edad_agresor': np.random.normal(35, 10, tamano_muestra),
+    'orden_alejamiento': np.random.choice([0, 1], tamano_muestra),
+    'denuncias_previas': np.random.poisson(1, tamano_muestra),
+    'tipo_maltrato': np.random.choice(['físico', 'psicológico', 'sexual'], tamano_muestra),
+    'reincidencia': np.random.choice([0, 1], tamano_muestra)
+})
+
+# Entrenar el modelo GAM
+st.write("### Datos de entrenamiento")
+st.dataframe(datos.head())
+
+modelo, datos, variables = entrenar_modelo_gam(datos)
+
+st.sidebar.header("Simulación de Nuevos Eventos")
+n_sim = st.sidebar.slider("Número de simulaciones", 10, 1000, 100)
+
+if st.sidebar.button("Simular eventos futuros"):
+    nuevos_eventos = simular_eventos(modelo, datos, variables, n_sim)
+    
+    st.write("### Nuevos eventos simulados")
+    st.dataframe(nuevos_eventos)
+
+    st.write("### Distribución de reincidencias simuladas")
+    st.bar_chart(nuevos_eventos['reincidencia'].value_counts())
