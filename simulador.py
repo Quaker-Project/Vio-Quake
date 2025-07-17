@@ -1,8 +1,10 @@
-import streamlit as st
+import numpy as np
 import pandas as pd
-import io
-from datetime import datetime
-from simulador import simular_eventos  # Asumiendo que simulador.py está en el mismo directorio
+from scipy.optimize import minimize
+from scipy.spatial import cKDTree
+from shapely.geometry import Point
+from patsy import dmatrix
+from sklearn.linear_model import PoissonRegressor # Asumiendo que simulador.py está en el mismo directorio
 
 st.set_page_config(page_title="VIO-QUAKE Simulador Hawkes", layout="centered")
 
