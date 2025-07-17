@@ -19,7 +19,6 @@ if data_file is not None:
 
     st.success("Datos cargados correctamente")
 
-    # Intentar encontrar columna de fecha
     fecha_cols = [col for col in df.columns if "fecha" in col.lower()]
     if not fecha_cols:
         st.error("No se encontró una columna de fecha en los datos.")
@@ -30,9 +29,10 @@ if data_file is not None:
         st.write("Ejemplo de datos:")
         st.dataframe(df.head())
 
-        # --- 2. Configuración de entrenamiento y simulación ---
+        # --- 2. Configuración ---
         st.sidebar.header("⚙️ Parámetros")
         fecha_min, fecha_max = df["Fecha"].min(), df["Fecha"].max()
+
         fecha_ini_train = st.sidebar.date_input("Fecha inicio entrenamiento", value=fecha_min, min_value=fecha_min, max_value=fecha_max)
         fecha_fin_train = st.sidebar.date_input("Fecha fin entrenamiento", value=fecha_max, min_value=fecha_min, max_value=fecha_max)
 
@@ -46,7 +46,7 @@ if data_file is not None:
         # --- 3. Botón de ejecución ---
         if st.button("🚀 Entrenar y Simular"):
             with st.spinner("Entrenando modelo GAM Hawkes..."):
-                modelo = entrenar_modelo_gam(df_train)
+                modelo, info = entrenar_modelo_gam(df_train)
 
             with st.spinner("Simulando eventos..."):
                 eventos_simulados = simular_eventos(
@@ -65,6 +65,11 @@ if data_file is not None:
             st.markdown(f"📊 Media diaria simulada: **{sim_count / dias:.2f}**")
             st.markdown(f"📈 Total real: {real_count}, Total simulado: {sim_count}")
 
-            st.line_chart(pd.Series(eventos_simulados, name="Eventos simulados"))
+            # Mostrar parámetros estimados
+            st.markdown("### 📌 Parámetros estimados del modelo")
+            st.markdown(f"- **Mu promedio diario**: {info['mu_diario']:.4f}")
+            st.markdown(f"- **Alfa promedio diario**: {info['alpha_diario']:.4f}")
+            st.markdown(f"- **Decay estimado (β)**: {info['decay']:.4f}")
+
 else:
     st.info("Sube un archivo para comenzar.")
