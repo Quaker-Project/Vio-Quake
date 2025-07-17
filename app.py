@@ -1,5 +1,3 @@
-# app.py
-
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -62,9 +60,13 @@ if archivo:
             st.success(f"✅ Se simularon {len(fechas_simuladas)} eventos.")
             st.dataframe(pd.DataFrame({'Fecha simulada': fechas_simuladas}))
 
-            # --- Gráfico ---
+            # --- Gráfico corregido ---
+            df_sim = pd.DataFrame({'Fecha simulada': fechas_simuladas})
+            df_sim['Fecha_dia'] = df_sim['Fecha simulada'].dt.date
+            conteo_por_dia = df_sim.groupby('Fecha_dia').size()
+
             fig, ax = plt.subplots()
-            pd.Series(fechas_simuladas).groupby(lambda d: d.date()).size().plot(kind='bar', ax=ax)
+            conteo_por_dia.plot(kind='bar', ax=ax)
             ax.set_title("Eventos simulados por día")
             ax.set_ylabel("Frecuencia")
             ax.set_xlabel("Fecha")
