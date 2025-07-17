@@ -1,110 +1,169 @@
 import numpy as np
 import pandas as pd
+from scipy.interpolate import BSpline, interp1d
 from scipy.optimize import minimize
-from scipy.spatial import cKDTree
-from shapely.geometry import Point
-from patsy import dmatrix
-from sklearn.linear_model import PoissonRegressor # Asumiendo que simulador.py está en el mismo directorio
+from numba import njit
 
-st.set_page_config(page_title="VIO-QUAKE Simulador Hawkes", layout="centered")
+def preparar_spline(times_train_np, K=8, degree=3):
+    T_train = times_train_np.max()
+    knots = np.linspace(0, T_train, K)
+    knots_extended = np.concatenate((np.repeat(knots[0], degree), knots, np.repeat(knots[-1], degree)))
+    n_coef = len(knots) + degree - 1
 
-def cargar_datos(file):
-    if file is None:
-        return None
-    try:
-        if file.name.endswith('.csv'):
-            df = pd.read_csv(file)
-        else:
-            df = pd.read_excel(file)
-        df['Fecha'] = pd.to_datetime(df['Fecha'], errors='coerce')
-        return df
-    except Exception as e:
-        st.error(f"Error cargando archivo: {e}")
-        return None
+    def spline_basis(t):
+        t = np.atleast_1d(t)
+        basis_matrix = np.zeros((len(t), n_coef))
+        for i in range(n_coef):
+            c = np.zeros(n_coef)
+            c[i] = 1
+            spline = BSpline(knots_extended, c, degree)
+            basis_matrix[:, i] = spline(t)
+        return basis_matrix
 
-def main():
-    st.title("🧨 VIO-QUAKE | Simulador Hawkes")
+    spline_mat = spline_basis(times_train_np)
+    return spline_mat, knots_extended, n_coef, T_train
 
-    st.markdown("""
-    Sube tus datos con columnas mínimas:  
-    - Long (longitud)  
-    - Lat (latitud)  
-    - Fecha (datetime con o sin hora)
-    """)
+def mu_vals_from_coef(c_mu, spline_mat):
+    return spline_mat @ c_mu
 
-    archivo = st.file_uploader("Carga archivo CSV o Excel", type=['csv', 'xls', 'xlsx'])
-    df = cargar_datos(archivo)
+def alpha_vals_from_coef(c_alpha, spline_mat):
+    return spline_mat @ c_alpha
 
-    if df is not None:
-        if not all(col in df.columns for col in ['Long', 'Lat', 'Fecha']):
-            st.error("El archivo debe contener las columnas: Long, Lat y Fecha.")
-            return
+@njit
+def compute_log_likelihood_numba(times, mu_vals, alpha_vals, decay):
+    n = len(times)
+    ll = 0.0
+    for i in range(n):
+        excitation = 0.0
+        for j in range(i):
+            dt = times[i] - times[j]
+            excitation += alpha_vals[j] * decay * np.exp(-decay * dt)
+        intensity = mu_vals[i] + excitation
+        if intensity <= 0:
+            return -np.inf
+        ll += np.log(intensity)
+    return ll
 
-        if df['Fecha'].isnull().any():
-            st.error("Hay fechas inválidas o mal formateadas en el archivo.")
-            return
+def entrenar_modelo_gam(df, fecha_inicio_train, fecha_fin_train, lambda_reg=0.01, usar_hora=True):
+    df_train = df[(df['Fecha'] >= fecha_inicio_train) & (df['Fecha'] <= fecha_fin_train)].copy()
+    df_train = df_train.sort_values('Fecha').reset_index(drop=True)
+    t0_train = df_train['Fecha'].min()
 
-        min_fecha = df['Fecha'].min()
-        max_fecha = df['Fecha'].max()
+    if usar_hora:
+        times_train = (df_train['Fecha'] - t0_train).dt.total_seconds() / (3600 * 24)
+    else:
+        times_train = (df_train['Fecha'].dt.floor('D') - t0_train).dt.total_seconds() / (3600 * 24)
 
-        st.sidebar.header("Configuración de fechas")
-        usar_hora = st.sidebar.checkbox("¿Los datos incluyen hora?", value=True)
+    times_train_np = times_train.values
 
-        fecha_inicio_train = st.sidebar.date_input("Fecha inicio entrenamiento", min_value=min_fecha.date(), max_value=max_fecha.date(), value=min_fecha.date())
-        fecha_fin_train = st.sidebar.date_input("Fecha fin entrenamiento", min_value=min_fecha.date(), max_value=max_fecha.date(), value=max_fecha.date())
+    spline_mat, knots_extended, n_coef, T_train = preparar_spline(times_train_np)
 
-        fecha_inicio_sim = st.sidebar.date_input("Fecha inicio simulación", value=max_fecha.date())
-        fecha_fin_sim = st.sidebar.date_input("Fecha fin simulación", value=max_fecha.date())
+    def log_likelihood(params):
+        c_mu = params[:n_coef]
+        c_alpha = params[n_coef:2*n_coef]
+        decay = params[-1]
 
-        mu_boost = st.sidebar.slider("Multiplicador mu_boost", 0.1, 5.0, 1.0, 0.1)
-        max_eventos = st.sidebar.number_input("Máximo eventos simulados", min_value=100, max_value=100000, value=5000, step=100)
-        usar_semilla = st.sidebar.checkbox("Fijar semilla aleatoria", value=False)
+        if np.any(c_mu < 0) or np.any(c_alpha < 0) or decay <= 0:
+            return np.inf
 
-        if fecha_fin_train < fecha_inicio_train:
-            st.error("La fecha fin de entrenamiento debe ser posterior o igual a la fecha inicio.")
-            return
-        if fecha_fin_sim < fecha_inicio_sim:
-            st.error("La fecha fin de simulación debe ser posterior o igual a la fecha inicio.")
-            return
+        mu_vals = mu_vals_from_coef(c_mu, spline_mat)
+        alpha_vals = alpha_vals_from_coef(c_alpha, spline_mat)
 
-        if st.button("Entrenar y Simular"):
-            with st.spinner("Entrenando modelo y simulando eventos..."):
-                # Convertir fechas a datetime completas si no hay hora
-                if not usar_hora:
-                    fecha_inicio_train_dt = pd.to_datetime(fecha_inicio_train)
-                    fecha_fin_train_dt = pd.to_datetime(fecha_fin_train) + pd.Timedelta(hours=23, minutes=59, seconds=59)
-                    fecha_inicio_sim_dt = pd.to_datetime(fecha_inicio_sim)
-                    fecha_fin_sim_dt = pd.to_datetime(fecha_fin_sim) + pd.Timedelta(hours=23, minutes=59, seconds=59)
-                else:
-                    # Solo fecha, sin hora, asignamos inicio del día
-                    fecha_inicio_train_dt = pd.to_datetime(fecha_inicio_train)
-                    fecha_fin_train_dt = pd.to_datetime(fecha_fin_train) + pd.Timedelta(hours=23, minutes=59, seconds=59)
-                    fecha_inicio_sim_dt = pd.to_datetime(fecha_inicio_sim)
-                    fecha_fin_sim_dt = pd.to_datetime(fecha_fin_sim) + pd.Timedelta(hours=23, minutes=59, seconds=59)
+        ll = compute_log_likelihood_numba(times_train_np, mu_vals, alpha_vals, decay)
 
-                # Ejecutar simulación
-                df_sim = simular_eventos(df, fecha_inicio_train_dt, fecha_fin_train_dt,
-                                         fecha_inicio_sim_dt, fecha_fin_sim_dt,
-                                         mu_boost=mu_boost, max_eventos=max_eventos,
-                                         seed=42 if usar_semilla else None,
-                                         usar_hora=usar_hora)
+        time_grid = np.linspace(0, T_train, 1000)
+        spline_grid = np.zeros((len(time_grid), n_coef))
+        for i in range(n_coef):
+            c = np.zeros(n_coef)
+            c[i] = 1
+            spline_grid[:, i] = BSpline(knots_extended, c, 3)(time_grid)
 
-                # Conteos
-                eventos_reales = df[(df['Fecha'] >= fecha_inicio_sim_dt) & (df['Fecha'] <= fecha_fin_sim_dt)]
-                n_reales = len(eventos_reales)
-                n_simulados = len(df_sim)
-                dias_sim = (fecha_fin_sim_dt - fecha_inicio_sim_dt).days + 1
+        mu_integral = np.trapz(spline_grid @ c_mu, time_grid)
+        hawkes_integral = (np.mean(alpha_vals) / decay) * len(times_train_np)
+        penalty = lambda_reg * np.sum(c_alpha ** 2)
 
-                st.markdown(f"**Eventos reales periodo simulación:** {n_reales} (media diaria {n_reales/dias_sim:.2f})")
-                st.markdown(f"**Eventos simulados periodo simulación:** {n_simulados} (media diaria {n_simulados/dias_sim:.2f})")
+        return -(ll - (mu_integral + hawkes_integral)) + penalty
 
-                # Botón descarga
-                towrite = io.BytesIO()
-                df_sim.to_excel(towrite, index=False)
-                towrite.seek(0)
-                st.download_button("Descargar eventos simulados (Excel)", data=towrite,
-                                   file_name="eventos_simulados.xlsx",
-                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    initial_params = np.concatenate([
+        np.full(n_coef, len(times_train_np) / T_train / n_coef),
+        np.full(n_coef, 0.1),
+        [1.0]
+    ])
 
-if __name__ == "__main__":
-    main()
+    bounds = [(0, None)] * (2 * n_coef) + [(1e-3, 100)]
+
+    res = minimize(log_likelihood, initial_params, bounds=bounds, method='L-BFGS-B', options={'maxiter': 2000})
+
+    c_mu_fit, c_alpha_fit, decay_fit = res.x[:n_coef], res.x[n_coef:2*n_coef], res.x[-1]
+
+    time_grid = np.linspace(0, T_train, 1000)
+    spline_grid = np.zeros((len(time_grid), n_coef))
+    for i in range(n_coef):
+        c = np.zeros(n_coef)
+        c[i] = 1
+        spline_grid[:, i] = BSpline(knots_extended, c, 3)(time_grid)
+
+    mu_interp_fn = interp1d(time_grid, spline_grid @ c_mu_fit, kind='cubic', fill_value="extrapolate")
+    alpha_interp_fn = interp1d(time_grid, spline_grid @ c_alpha_fit, kind='cubic', fill_value="extrapolate")
+
+    factor_ajuste = len(times_train_np) / (np.trapz(mu_interp_fn(time_grid), time_grid) + (np.mean(alpha_interp_fn(time_grid)) / decay_fit) * len(times_train_np))
+
+    return {
+        'mu_interp_fn': mu_interp_fn,
+        'alpha_interp_fn': alpha_interp_fn,
+        'decay': decay_fit,
+        't0_train': t0_train,
+        'T_train': T_train,
+        'factor_ajuste': factor_ajuste
+    }
+
+def simulate_hawkes_ogata(mu_fn, alpha_fn, decay, t_start, t_end, max_jumps=10000, seed=None):
+    if seed is not None:
+        np.random.seed(seed)
+    t = t_start
+    events = []
+    while t < t_end and len(events) < max_jumps:
+        excitation = 0.0
+        for s in events:
+            if s < t:
+                excitation += alpha_fn(s) * decay * np.exp(-decay * (t - s))
+        lambda_t = mu_fn(t) + excitation
+        if lambda_t <= 0:
+            break
+        u = np.random.uniform()
+        w = -np.log(u) / lambda_t
+        t_candidate = t + w
+        if t_candidate > t_end:
+            break
+        excitation_candidate = 0.0
+        for s in events:
+            if s < t_candidate:
+                excitation_candidate += alpha_fn(s) * decay * np.exp(-decay * (t_candidate - s))
+        lambda_candidate = mu_fn(t_candidate) + excitation_candidate
+        if np.random.uniform() <= lambda_candidate / lambda_t:
+            events.append(t_candidate)
+        t = t_candidate
+    return np.array(events)
+
+def simular_eventos(df, fecha_inicio_train, fecha_fin_train, fecha_inicio_sim, fecha_fin_sim,
+                    mu_boost=1.0, max_eventos=5000, seed=None, usar_hora=True):
+
+    modelo = entrenar_modelo_gam(df, fecha_inicio_train, fecha_fin_train, usar_hora=usar_hora)
+    mu_interp_fn = modelo['mu_interp_fn']
+    alpha_interp_fn = modelo['alpha_interp_fn']
+    decay = modelo['decay']
+    t0_train = modelo['t0_train']
+    factor_ajuste = modelo['factor_ajuste']
+
+    def mu_fn(t):
+        return mu_boost * factor_ajuste * mu_interp_fn(t)
+
+    alpha_fn = alpha_interp_fn
+
+    T_ini = (fecha_inicio_sim - t0_train).total_seconds() / (3600 * 24)
+    T_fin = (fecha_fin_sim - t0_train).total_seconds() / (3600 * 24)
+
+    eventos_sim = simulate_hawkes_ogata(mu_fn, alpha_fn, decay, T_ini, T_fin, max_jumps=max_eventos, seed=seed)
+    fechas_sim = pd.to_datetime(eventos_sim * 24 * 3600, unit='s', origin=t0_train)
+    df_sim = pd.DataFrame({'Fecha': fechas_sim})
+    return df_sim
