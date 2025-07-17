@@ -1,85 +1,70 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-from simulador import simular_eventos
+from simulador import entrenar_modelo_gam, simular_eventos
 
 st.set_page_config(page_title="VIO-QUAKE Simulador Hawkes", layout="centered")
-st.title("📈 VIO-QUAKE - Simulador de Eventos tipo Hawkes")
+st.title("🔮 Simulador de eventos VIO-QUAKE")
 
-# ---- Carga de datos ----
-st.sidebar.header("📁 Cargar datos")
-uploaded_file = st.sidebar.file_uploader("Sube tu archivo CSV o Excel", type=["csv", "xlsx"])
-usar_hora = st.sidebar.checkbox("¿Tu dataset incluye hora?", value=True)
+# --- 1. Cargar datos ---
+st.sidebar.header("📁 Subida de datos")
+data_file = st.sidebar.file_uploader("Sube un archivo Excel o CSV", type=["xlsx", "csv"])
+has_hour = st.sidebar.checkbox("¿Tus datos tienen hora (además de fecha)?", value=False)
 
-df = None
-if uploaded_file:
-    try:
-        if uploaded_file.name.endswith('.csv'):
-            df = pd.read_csv(uploaded_file, parse_dates=["Fecha"])
-        else:
-            df = pd.read_excel(uploaded_file, parse_dates=["Fecha"])
-        if "Fecha" not in df.columns:
-            st.error("El archivo debe contener una columna llamada 'Fecha'")
-            df = None
-        else:
-            df = df.sort_values("Fecha")
-            st.success("✅ Datos cargados correctamente")
-    except Exception as e:
-        st.error(f"❌ Error al leer el archivo: {e}")
-        df = None
+if data_file is not None:
+    if data_file.name.endswith(".xlsx"):
+        df = pd.read_excel(data_file)
+    else:
+        df = pd.read_csv(data_file)
 
-if df is not None:
-    # Mostrar datos brevemente
-    st.write("Vista previa de los datos cargados:")
-    st.dataframe(df.head())
+    st.success("Datos cargados correctamente")
 
-    # Rango completo del dataset
-    min_fecha = df["Fecha"].min()
-    max_fecha = df["Fecha"].max()
+    # Intentar encontrar columna de fecha
+    fecha_cols = [col for col in df.columns if "fecha" in col.lower()]
+    if not fecha_cols:
+        st.error("No se encontró una columna de fecha en los datos.")
+    else:
+        fecha_col = st.sidebar.selectbox("Selecciona la columna de fecha:", fecha_cols)
+        df["Fecha"] = pd.to_datetime(df[fecha_col])
 
-    st.sidebar.markdown("### 🏁 Fechas de entrenamiento")
-    fecha_inicio_train = st.sidebar.date_input("Inicio entrenamiento", min_value=min_fecha.date(), max_value=max_fecha.date(), value=min_fecha.date())
-    fecha_fin_train = st.sidebar.date_input("Fin entrenamiento", min_value=min_fecha.date(), max_value=max_fecha.date(), value=max_fecha.date())
+        st.write("Ejemplo de datos:")
+        st.dataframe(df.head())
 
-    st.sidebar.markdown("### 🎯 Fechas de simulación")
-    fecha_inicio_sim = st.sidebar.date_input("Inicio simulación", min_value=min_fecha.date(), max_value=max_fecha.date(), value=min_fecha.date())
-    fecha_fin_sim = st.sidebar.date_input("Fin simulación", min_value=min_fecha.date(), max_value=max_fecha.date(), value=max_fecha.date())
+        # --- 2. Configuración de entrenamiento y simulación ---
+        st.sidebar.header("⚙️ Parámetros")
+        fecha_min, fecha_max = df["Fecha"].min(), df["Fecha"].max()
+        fecha_ini_train = st.sidebar.date_input("Fecha inicio entrenamiento", value=fecha_min, min_value=fecha_min, max_value=fecha_max)
+        fecha_fin_train = st.sidebar.date_input("Fecha fin entrenamiento", value=fecha_max, min_value=fecha_min, max_value=fecha_max)
 
-    st.sidebar.markdown("### ⚙️ Parámetros de simulación")
-    mu_boost = st.sidebar.slider("Boost (μ)", 0.1, 5.0, 1.0, 0.1)
-    max_eventos = st.sidebar.slider("Máx. eventos simulados", 100, 5000, 1000, 100)
-    seed = st.sidebar.number_input("Semilla aleatoria (opcional)", value=42, step=1)
+        fecha_ini_sim = st.sidebar.date_input("Fecha inicio simulación", value=fecha_max, min_value=fecha_min)
+        fecha_fin_sim = st.sidebar.date_input("Fecha fin simulación", value=fecha_max + pd.Timedelta(days=30))
 
-    ejecutar = st.sidebar.button("🚀 Entrenar y Simular")
+        mu_boost = st.sidebar.slider("μ boost (ajuste de intensidad basal)", min_value=0.0, max_value=3.0, value=1.0, step=0.1)
 
-    if ejecutar:
-        try:
-            with st.spinner("⏳ Entrenando modelo y generando eventos..."):
-                df_sim = simular_eventos(
-                    df=df,
-                    fecha_inicio_train=pd.to_datetime(fecha_inicio_train),
-                    fecha_fin_train=pd.to_datetime(fecha_fin_train),
-                    fecha_inicio_sim=pd.to_datetime(fecha_inicio_sim),
-                    fecha_fin_sim=pd.to_datetime(fecha_fin_sim),
-                    mu_boost=mu_boost,
-                    max_eventos=max_eventos,
-                    seed=int(seed),
-                    usar_hora=usar_hora
+        df_train = df[(df["Fecha"] >= pd.to_datetime(fecha_ini_train)) & (df["Fecha"] <= pd.to_datetime(fecha_fin_train))]
+
+        # --- 3. Botón de ejecución ---
+        if st.button("🚀 Entrenar y Simular"):
+            with st.spinner("Entrenando modelo GAM Hawkes..."):
+                modelo = entrenar_modelo_gam(df_train)
+
+            with st.spinner("Simulando eventos..."):
+                eventos_simulados = simular_eventos(
+                    modelo,
+                    fecha_ini=pd.to_datetime(fecha_ini_sim),
+                    fecha_fin=pd.to_datetime(fecha_fin_sim),
+                    mu_boost=mu_boost
                 )
 
-            st.success("✅ Simulación completada")
-            st.write("### Eventos simulados")
-            st.dataframe(df_sim)
+            real_count = df[(df["Fecha"] >= pd.to_datetime(fecha_ini_sim)) & (df["Fecha"] <= pd.to_datetime(fecha_fin_sim))].shape[0]
+            sim_count = len(eventos_simulados)
 
-            dias_sim = (pd.to_datetime(fecha_fin_sim) - pd.to_datetime(fecha_inicio_sim)).days + 1
-            eventos_reales = df[(df["Fecha"] >= pd.to_datetime(fecha_inicio_sim)) & (df["Fecha"] <= pd.to_datetime(fecha_fin_sim))]
-            media_real = eventos_reales.shape[0] / dias_sim
-            media_sim = df_sim.shape[0] / dias_sim
+            dias = (pd.to_datetime(fecha_fin_sim) - pd.to_datetime(fecha_ini_sim)).days + 1
 
-            st.markdown(f"📊 **Media diaria real:** {media_real:.2f}")
-            st.markdown(f"📊 **Media diaria simulada:** {media_sim:.2f}")
+            st.markdown(f"📊 Media diaria real: **{real_count / dias:.2f}**")
+            st.markdown(f"📊 Media diaria simulada: **{sim_count / dias:.2f}**")
+            st.markdown(f"📈 Total real: {real_count}, Total simulado: {sim_count}")
 
-        except Exception as e:
-            st.error(f"❌ Error durante la simulación: {e}")
+            st.line_chart(pd.Series(eventos_simulados, name="Eventos simulados"))
 else:
-    st.warning("🔄 Carga un archivo para comenzar.")
+    st.info("Sube un archivo para comenzar.")
