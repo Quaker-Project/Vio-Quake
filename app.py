@@ -41,24 +41,22 @@ if archivo:
 
             if st.button("🚀 Entrenar modelo y simular"):
                 with st.spinner("Entrenando modelo Hawkes temporal..."):
-                    # Guardar archivo temporal
-                    temp_buffer = io.BytesIO()
-                    df.to_excel(temp_buffer, index=False)
-                    temp_buffer.seek(0)
-
-                    # Inicializar y entrenar modelo
-                    modelo = HawkesSimulator(temp_buffer)
+                    # Filtrar datos de entrenamiento
                     mask = (df["Fecha"] >= pd.to_datetime(fecha_ini_train)) & (df["Fecha"] <= pd.to_datetime(fecha_fin_train))
                     df_train = df[mask]
                     if df_train.empty:
                         st.error("❌ El periodo de entrenamiento no contiene datos válidos.")
                         st.stop()
-                    buffer_train = io.BytesIO()
-                    with pd.ExcelWriter(buffer_train, engine='xlsxwriter') as writer:
-                        df_train.to_excel(writer, index=False)
-                    buffer_train.seek(0)
-                    modelo = HawkesSimulator(buffer_train)
 
+                    # Guardar archivo temporal solo con datos de entrenamiento
+                    temp_buffer = io.BytesIO()
+                    with pd.ExcelWriter(temp_buffer, engine='xlsxwriter') as writer:
+                        df_train.to_excel(writer, index=False)
+                    temp_buffer.seek(0)
+
+                    # Inicializar y entrenar modelo con datos filtrados
+                    modelo = HawkesSimulator(temp_buffer)
+                    modelo.fit()
 
                 with st.spinner("Simulando eventos..."):
                     eventos = modelo.simulate(pd.to_datetime(fecha_ini_sim), pd.to_datetime(fecha_fin_sim), mu_boost=mu_boost)
