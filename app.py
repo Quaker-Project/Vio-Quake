@@ -46,18 +46,25 @@ if archivo:
                     df.to_excel(temp_buffer, index=False)
                     temp_buffer.seek(0)
 
-                    # Inicializar modelo
+                    # Inicializar y entrenar modelo
                     modelo = HawkesSimulator(temp_buffer)
-                    modelo.entrenar_modelo(pd.to_datetime(fecha_ini_train), pd.to_datetime(fecha_fin_train))
+                    mask = (df["Fecha"] >= pd.to_datetime(fecha_ini_train)) & (df["Fecha"] <= pd.to_datetime(fecha_fin_train))
+                    df_train = df[mask]
+                    if df_train.empty:
+                        st.error("❌ El periodo de entrenamiento no contiene datos válidos.")
+                        st.stop()
+                    modelo = HawkesSimulator(io.BytesIO(df_train.to_excel(index=False, engine='xlsxwriter')))
+                    modelo.fit()
 
                 with st.spinner("Simulando eventos..."):
-                    eventos = modelo.simular_eventos(pd.to_datetime(fecha_ini_sim), pd.to_datetime(fecha_fin_sim), mu_boost=mu_boost)
+                    eventos = modelo.simulate(pd.to_datetime(fecha_ini_sim), pd.to_datetime(fecha_fin_sim), mu_boost=mu_boost)
 
                 st.success(f"✅ Simulados {len(eventos)} eventos entre {fecha_ini_sim} y {fecha_fin_sim}")
 
                 # Estadísticas
                 dias_sim = max((pd.to_datetime(fecha_fin_sim) - pd.to_datetime(fecha_ini_sim)).days + 1, 1)
                 real_count = df[(df["Fecha"] >= pd.to_datetime(fecha_ini_sim)) & (df["Fecha"] <= pd.to_datetime(fecha_fin_sim))].shape[0]
+                resumen = modelo.summary()
 
                 st.markdown(f"""
                 📊 Media diaria real: **{real_count / dias_sim:.2f}**
@@ -67,13 +74,13 @@ if archivo:
                 📈 Total real: **{real_count}**, Total simulado: **{len(eventos)}**
 
                 📌 Parámetros estimados del modelo
-                - Mu promedio diario: **{modelo.info['mu_diario']:.4f}**
-                - Alfa promedio diario: **{modelo.info['alpha_diario']:.4f}**
-                - Decay estimado (β): **{modelo.info['decay']:.4f}**
+                - Mu promedio diario: **{resumen['mu_avg']:.4f}**
+                - Alfa promedio diario: **{resumen['alpha_avg']:.4f}**
+                - Decay estimado (β): **{resumen['decay']:.4f}**
                 """)
 
                 # Descargar resultados
-                out_df = pd.DataFrame({"Fecha": [modelo.info['t0'] + pd.Timedelta(days=float(t)) for t in eventos]})
+                out_df = pd.DataFrame({"Fecha": [modelo.t0 + pd.Timedelta(days=float(t)) for t in eventos]})
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                     out_df.to_excel(writer, index=False)
