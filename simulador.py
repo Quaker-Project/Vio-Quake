@@ -1,34 +1,23 @@
 import numpy as np
 import pandas as pd
-from scipy.interpolate import BSpline, interp1d
 from scipy.optimize import minimize
+from scipy.interpolate import BSpline, interp1d
+from datetime import datetime
 from numba import njit
 
-def preparar_spline(times_train_np, K=8, degree=3):
-    T_train = times_train_np.max()
-    knots = np.linspace(0, T_train, K)
-    knots_extended = np.concatenate((np.repeat(knots[0], degree), knots, np.repeat(knots[-1], degree)))
+# --- SPLINE DEFINITION ---
+def spline_basis_matrix(t, knots, degree):
     n_coef = len(knots) + degree - 1
+    knots_ext = np.concatenate(([knots[0]] * degree, knots, [knots[-1]] * degree))
+    spline_mat = np.zeros((len(t), n_coef))
+    for i in range(n_coef):
+        coeffs = np.zeros(n_coef)
+        coeffs[i] = 1
+        spline = BSpline(knots_ext, coeffs, degree)
+        spline_mat[:, i] = spline(t)
+    return spline_mat
 
-    def spline_basis(t):
-        t = np.atleast_1d(t)
-        basis_matrix = np.zeros((len(t), n_coef))
-        for i in range(n_coef):
-            c = np.zeros(n_coef)
-            c[i] = 1
-            spline = BSpline(knots_extended, c, degree)
-            basis_matrix[:, i] = spline(t)
-        return basis_matrix
-
-    spline_mat = spline_basis(times_train_np)
-    return spline_mat, knots_extended, n_coef, T_train
-
-def mu_vals_from_coef(c_mu, spline_mat):
-    return spline_mat @ c_mu
-
-def alpha_vals_from_coef(c_alpha, spline_mat):
-    return spline_mat @ c_alpha
-
+# --- LOG-LIKELIHOOD FUNCTION ---
 @njit
 def compute_log_likelihood_numba(times, mu_vals, alpha_vals, decay):
     n = len(times)
@@ -40,93 +29,78 @@ def compute_log_likelihood_numba(times, mu_vals, alpha_vals, decay):
             excitation += alpha_vals[j] * decay * np.exp(-decay * dt)
         intensity = mu_vals[i] + excitation
         if intensity <= 0:
-            return -np.inf
+            return -1e10  # Penaliza intensidades no positivas
         ll += np.log(intensity)
     return ll
 
-def entrenar_modelo_gam(df, fecha_inicio_train, fecha_fin_train, lambda_reg=0.01, usar_hora=True):
-    df_train = df[(df['Fecha'] >= fecha_inicio_train) & (df['Fecha'] <= fecha_fin_train)].copy()
+def entrenar_modelo_gam(df_train, lambda_reg=0.01, K=8, degree=3):
     df_train = df_train.sort_values('Fecha').reset_index(drop=True)
-    t0_train = df_train['Fecha'].min()
+    t0 = df_train['Fecha'].min()
+    times = (df_train['Fecha'] - t0).dt.total_seconds() / (3600 * 24)
+    times_np = times.values
+    T_train = times.max()
 
-    if usar_hora:
-        times_train = (df_train['Fecha'] - t0_train).dt.total_seconds() / (3600 * 24)
-    else:
-        times_train = (df_train['Fecha'].dt.floor('D') - t0_train).dt.total_seconds() / (3600 * 24)
+    knots = np.linspace(0, T_train, K)
+    spline_mat = spline_basis_matrix(times_np, knots, degree)
+    n_coef = spline_mat.shape[1]
+    spline_grid = spline_basis_matrix(np.linspace(0, T_train, 1000), knots, degree)
+    mu_integral_coeffs = np.trapz(spline_grid, np.linspace(0, T_train, 1000), axis=0)
 
-    times_train_np = times_train.values
+    def mu_from_c(c_mu): return spline_mat @ c_mu
+    def alpha_from_c(c_alpha): return spline_mat @ c_alpha
 
-    spline_mat, knots_extended, n_coef, T_train = preparar_spline(times_train_np)
-
-    def log_likelihood(params):
+    def neg_log_likelihood(params):
         c_mu = params[:n_coef]
-        c_alpha = params[n_coef:2*n_coef]
+        c_alpha = params[n_coef:2 * n_coef]
         decay = params[-1]
 
         if np.any(c_mu < 0) or np.any(c_alpha < 0) or decay <= 0:
-            return np.inf
+            return 1e10
 
-        mu_vals = mu_vals_from_coef(c_mu, spline_mat)
-        alpha_vals = alpha_vals_from_coef(c_alpha, spline_mat)
+        mu_vals = mu_from_c(c_mu)
+        alpha_vals = alpha_from_c(c_alpha)
+        ll = compute_log_likelihood_numba(times_np, mu_vals, alpha_vals, decay)
 
-        ll = compute_log_likelihood_numba(times_train_np, mu_vals, alpha_vals, decay)
-
-        time_grid = np.linspace(0, T_train, 1000)
-        spline_grid = np.zeros((len(time_grid), n_coef))
-        for i in range(n_coef):
-            c = np.zeros(n_coef)
-            c[i] = 1
-            spline_grid[:, i] = BSpline(knots_extended, c, 3)(time_grid)
-
-        mu_integral = np.trapz(spline_grid @ c_mu, time_grid)
-        hawkes_integral = (np.mean(alpha_vals) / decay) * len(times_train_np)
+        mu_integral = mu_integral_coeffs @ c_mu
+        hawkes_integral = (np.mean(alpha_vals) / decay) * len(times_np)
         penalty = lambda_reg * np.sum(c_alpha ** 2)
-
         return -(ll - (mu_integral + hawkes_integral)) + penalty
 
     initial_params = np.concatenate([
-        np.full(n_coef, len(times_train_np) / T_train / n_coef),
-        np.full(n_coef, 0.1),
-        [1.0]
+        np.full(n_coef, len(times_np) / T_train / n_coef),  # mu
+        np.full(n_coef, 0.1),  # alpha
+        [1.0]  # decay
     ])
+    bounds = [(0, None)] * (2 * n_coef) + [(1e-3, 50)]
+    res = minimize(neg_log_likelihood, initial_params, bounds=bounds, method='L-BFGS-B')
 
-    bounds = [(0, None)] * (2 * n_coef) + [(1e-3, 100)]
-
-    res = minimize(log_likelihood, initial_params, bounds=bounds, method='L-BFGS-B', options={'maxiter': 2000})
-
-    c_mu_fit, c_alpha_fit, decay_fit = res.x[:n_coef], res.x[n_coef:2*n_coef], res.x[-1]
-
-    time_grid = np.linspace(0, T_train, 1000)
-    spline_grid = np.zeros((len(time_grid), n_coef))
-    for i in range(n_coef):
-        c = np.zeros(n_coef)
-        c[i] = 1
-        spline_grid[:, i] = BSpline(knots_extended, c, 3)(time_grid)
-
-    mu_interp_fn = interp1d(time_grid, spline_grid @ c_mu_fit, kind='cubic', fill_value="extrapolate")
-    alpha_interp_fn = interp1d(time_grid, spline_grid @ c_alpha_fit, kind='cubic', fill_value="extrapolate")
-
-    factor_ajuste = len(times_train_np) / (np.trapz(mu_interp_fn(time_grid), time_grid) + (np.mean(alpha_interp_fn(time_grid)) / decay_fit) * len(times_train_np))
+    c_mu_fit, c_alpha_fit, decay_fit = res.x[:n_coef], res.x[n_coef:2 * n_coef], res.x[-1]
+    mu_interp_fn = interp1d(
+        np.linspace(0, T_train, 1000),
+        spline_basis_matrix(np.linspace(0, T_train, 1000), knots, degree) @ c_mu_fit,
+        kind='cubic', fill_value="extrapolate"
+    )
+    alpha_interp_fn = interp1d(
+        np.linspace(0, T_train, 1000),
+        spline_basis_matrix(np.linspace(0, T_train, 1000), knots, degree) @ c_alpha_fit,
+        kind='cubic', fill_value="extrapolate"
+    )
 
     return {
-        'mu_interp_fn': mu_interp_fn,
-        'alpha_interp_fn': alpha_interp_fn,
-        'decay': decay_fit,
-        't0_train': t0_train,
-        'T_train': T_train,
-        'factor_ajuste': factor_ajuste
+        "t0": t0,
+        "T_train": T_train,
+        "mu_fn": mu_interp_fn,
+        "alpha_fn": alpha_interp_fn,
+        "decay": decay_fit
     }
 
-def simulate_hawkes_ogata(mu_fn, alpha_fn, decay, t_start, t_end, max_jumps=10000, seed=None):
-    if seed is not None:
-        np.random.seed(seed)
+# --- SIMULATION FUNCTION ---
+def simulate_hawkes(mu_fn, alpha_fn, decay, t_start, t_end, max_jumps=10000):
+    np.random.seed(42)
     t = t_start
     events = []
     while t < t_end and len(events) < max_jumps:
-        excitation = 0.0
-        for s in events:
-            if s < t:
-                excitation += alpha_fn(s) * decay * np.exp(-decay * (t - s))
+        excitation = np.sum([alpha_fn(s) * decay * np.exp(-decay * (t - s)) for s in events if s < t])
         lambda_t = mu_fn(t) + excitation
         if lambda_t <= 0:
             break
@@ -135,35 +109,38 @@ def simulate_hawkes_ogata(mu_fn, alpha_fn, decay, t_start, t_end, max_jumps=1000
         t_candidate = t + w
         if t_candidate > t_end:
             break
-        excitation_candidate = 0.0
-        for s in events:
-            if s < t_candidate:
-                excitation_candidate += alpha_fn(s) * decay * np.exp(-decay * (t_candidate - s))
-        lambda_candidate = mu_fn(t_candidate) + excitation_candidate
-        if np.random.uniform() <= lambda_candidate / lambda_t:
+        excitation_cand = np.sum([alpha_fn(s) * decay * np.exp(-decay * (t_candidate - s)) for s in events if s < t_candidate])
+        lambda_cand = mu_fn(t_candidate) + excitation_cand
+        if np.random.uniform() <= lambda_cand / lambda_t:
             events.append(t_candidate)
         t = t_candidate
     return np.array(events)
 
-def simular_eventos(df, fecha_inicio_train, fecha_fin_train, fecha_inicio_sim, fecha_fin_sim,
-                    mu_boost=1.0, max_eventos=5000, seed=None, usar_hora=True):
+# --- FORECAST ---
+def simular_eventos(modelo, fecha_ini, fecha_fin, mu_boost=1.0):
+    t0 = modelo["t0"]
+    T_train = modelo["T_train"]
+    mu_fn_base = modelo["mu_fn"]
+    alpha_fn_base = modelo["alpha_fn"]
+    decay = modelo["decay"]
 
-    modelo = entrenar_modelo_gam(df, fecha_inicio_train, fecha_fin_train, usar_hora=usar_hora)
-    mu_interp_fn = modelo['mu_interp_fn']
-    alpha_interp_fn = modelo['alpha_interp_fn']
-    decay = modelo['decay']
-    t0_train = modelo['t0_train']
-    factor_ajuste = modelo['factor_ajuste']
+    T_ini = (pd.to_datetime(fecha_ini) - t0).total_seconds() / (3600 * 24)
+    T_fin = (pd.to_datetime(fecha_fin) - t0).total_seconds() / (3600 * 24)
 
-    def mu_fn(t):
-        return mu_boost * factor_ajuste * mu_interp_fn(t)
+    t_grid = np.linspace(T_ini, T_fin, 1000)
+    seasonal_mu = np.zeros_like(t_grid)
+    seasonal_alpha = np.zeros_like(t_grid)
+    for y in range(1, 4):
+        offset = y * 365
+        shifted = t_grid - offset
+        valid = (shifted >= 0) & (shifted <= T_train)
+        seasonal_mu[valid] += mu_fn_base(shifted[valid])
+        seasonal_alpha[valid] += alpha_fn_base(shifted[valid])
+    seasonal_mu /= 3
+    seasonal_alpha /= 3
 
-    alpha_fn = alpha_interp_fn
+    mu_fn = interp1d(t_grid, mu_boost * seasonal_mu, fill_value="extrapolate")
+    alpha_fn = interp1d(t_grid, seasonal_alpha, fill_value="extrapolate")
 
-    T_ini = (fecha_inicio_sim - t0_train).total_seconds() / (3600 * 24)
-    T_fin = (fecha_fin_sim - t0_train).total_seconds() / (3600 * 24)
-
-    eventos_sim = simulate_hawkes_ogata(mu_fn, alpha_fn, decay, T_ini, T_fin, max_jumps=max_eventos, seed=seed)
-    fechas_sim = pd.to_datetime(eventos_sim * 24 * 3600, unit='s', origin=t0_train)
-    df_sim = pd.DataFrame({'Fecha': fechas_sim})
-    return df_sim
+    simulated_events = simulate_hawkes(mu_fn, alpha_fn, decay, T_ini, T_fin)
+    return simulated_events
