@@ -53,8 +53,12 @@ if archivo:
                     if df_train.empty:
                         st.error("❌ El periodo de entrenamiento no contiene datos válidos.")
                         st.stop()
-                    modelo = HawkesSimulator(io.BytesIO(df_train.to_excel(index=False, engine='xlsxwriter')))
-                    modelo.fit()
+                    buffer_train = io.BytesIO()
+                    with pd.ExcelWriter(buffer_train, engine='xlsxwriter') as writer:
+                        df_train.to_excel(writer, index=False)
+                    buffer_train.seek(0)
+                    modelo = HawkesSimulator(buffer_train)
+
 
                 with st.spinner("Simulando eventos..."):
                     eventos = modelo.simulate(pd.to_datetime(fecha_ini_sim), pd.to_datetime(fecha_fin_sim), mu_boost=mu_boost)
