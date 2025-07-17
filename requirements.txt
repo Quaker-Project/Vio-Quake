@@ -13,3 +13,10 @@ pygam==0.8.0
 numpy==1.23.5
 numba
 patsy
+streamlit
+pandas
+numpy
+scipy
+matplotlib
+numba
+openpyxl
