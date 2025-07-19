@@ -1,11 +1,12 @@
 streamlit
-geopandas
 pandas
 numpy
 matplotlib
+geopandas
 shapely
-fiona
 pyproj
+fiona
+rtree
 numpyro
 jax[cpu]
-bstpp @ git+https://github.com/whbarnett/bstpp.git
+git+https://github.com/Bayesian-Spatio-Temporal-Point-Processes/bstpp.git
