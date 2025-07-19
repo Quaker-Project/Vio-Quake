@@ -1,76 +1,138 @@
 import streamlit as st
+import geopandas as gpd
 import pandas as pd
+import numpy as np
+import zipfile
+import os
+import tempfile
 import matplotlib.pyplot as plt
-from simulador import entrenar_modelo, simulate_hawkes
+from shapely.geometry import Point
+from datetime import datetime
 
-st.set_page_config(page_title="Simulador Hawkes", layout="wide")
-st.title("📊 Simulador de Eventos con Proceso de Hawkes")
+import numpyro.distributions as dist
+from bstpp.main import Hawkes_Model
 
-# --- Subir archivo Excel ---
-archivo = st.file_uploader("📁 Sube un archivo Excel con una columna 'Fecha'", type=["xlsx"])
+st.set_page_config(page_title="Modelo de Hurtos con Hawkes", layout="wide")
+st.title("📍 Modelo Espaciotemporal de Hurtos con Hawkes + Cox")
 
-if archivo:
-    df = pd.read_excel(archivo)
-    df['Fecha'] = pd.to_datetime(df['Fecha'])
+st.markdown("""
+Esta herramienta permite entrenar un modelo Hawkes sobre eventos (hurtos) en un espacio definido.
+Puedes subir los datos, definir el rango de entrenamiento, ajustar parámetros y visualizar los resultados.
+""")
 
-    st.success(f"✅ {len(df)} eventos cargados.")
-    fecha_min, fecha_max = df['Fecha'].min(), df['Fecha'].max()
+# ------------------------
+# Función para descomprimir shapefiles
+# ------------------------
+def unzip_shapefile(zip_file):
+    temp_dir = tempfile.mkdtemp()
+    with zipfile.ZipFile(zip_file, "r") as zip_ref:
+        zip_ref.extractall(temp_dir)
+    shp_files = [os.path.join(temp_dir, f) for f in os.listdir(temp_dir) if f.endswith(".shp")]
+    if not shp_files:
+        st.error("No se encontró archivo .shp válido en el ZIP")
+        return None
+    return gpd.read_file(shp_files[0])
 
-    # --- Fechas de entrenamiento ---
-    fecha_inicio = st.date_input("📅 Fecha inicio entrenamiento", value=fecha_min.date(), min_value=fecha_min.date(), max_value=fecha_max.date())
-    fecha_fin = st.date_input("📅 Fecha fin entrenamiento", value=fecha_max.date(), min_value=fecha_min.date(), max_value=fecha_max.date())
+# ------------------------
+# Cargar archivos del usuario
+# ------------------------
+col1, col2 = st.columns(2)
 
-    # Convertir fechas a pandas.Timestamp
-    fecha_inicio = pd.to_datetime(fecha_inicio)
-    fecha_fin = pd.to_datetime(fecha_fin)
+with col1:
+    zip_eventos = st.file_uploader("Sube el shapefile de hurtos (.zip)", type="zip")
+with col2:
+    zip_limites = st.file_uploader("Sube el shapefile de límites (.zip)", type="zip")
 
-    # --- Entrenar modelo ---
-    if st.button("🚀 Entrenar modelo Hawkes"):
-        modelo = entrenar_modelo(df, fecha_inicio, fecha_fin)
-        st.session_state["modelo_hawkes"] = modelo
-        st.success("✅ Modelo entrenado con éxito")
+# Parámetros
+fecha_ini = st.date_input("📅 Fecha inicio entrenamiento", value=pd.to_datetime("2017-01-01"))
+fecha_fin = st.date_input("📅 Fecha fin entrenamiento", value=pd.to_datetime("2018-05-01"))
+steps = st.slider("🎯 Número de pasos de entrenamiento", min_value=100, max_value=3000, step=100, value=1500)
 
-    # --- Simulación solo si ya hay modelo en sesión ---
-    if "modelo_hawkes" in st.session_state:
-        modelo = st.session_state["modelo_hawkes"]
+# ------------------------
+# Botón para entrenar
+# ------------------------
+if st.button("🚀 Entrenar modelo"):
+    if zip_eventos is None or zip_limites is None:
+        st.warning("Debes subir ambos shapefiles.")
+    else:
+        with st.spinner("Cargando datos y entrenando modelo..."):
+            # Leer shapefiles
+            gdf_events = unzip_shapefile(zip_eventos)
+            gdf_boundaries = unzip_shapefile(zip_limites)
+            gdf_events = gdf_events.to_crs("EPSG:4326")
+            gdf_boundaries = gdf_boundaries.to_crs("EPSG:4326")
 
-        st.subheader("🔮 Simulación de eventos futuros")
+            gdf_events["Fecha"] = pd.to_datetime(gdf_events["Fecha"])
+            t0 = gdf_events["Fecha"].min()
+            gdf_events["t"] = (gdf_events["Fecha"] - t0).dt.total_seconds() / 86400
+            gdf_events = gdf_events.sort_values("t")
 
-        pred_inicio = st.date_input("Fecha inicio predicción", value=fecha_fin + pd.Timedelta(days=1))
-        pred_fin = st.date_input("Fecha fin predicción", value=fecha_fin + pd.Timedelta(days=30))
+            # Train-test split
+            gdf_train = gdf_events[gdf_events["Fecha"] < pd.to_datetime(fecha_fin)]
+            gdf_test = gdf_events[gdf_events["Fecha"] >= pd.to_datetime(fecha_fin)]
+            data_model = gdf_train[["t", "Long", "Lat"]].rename(columns={"t": "T", "Long": "X", "Lat": "Y"})
 
-        # Convertir
-        pred_inicio = pd.to_datetime(pred_inicio)
-        pred_fin = pd.to_datetime(pred_fin)
-
-        if st.button("🎯 Simular eventos"):
-            t_ini = (pred_inicio - modelo['t0']).total_seconds() / (3600 * 24)
-            t_fin = (pred_fin - modelo['t0']).total_seconds() / (3600 * 24)
-
-            eventos = simulate_hawkes(
-                modelo['mu_interp'],
-                modelo['alpha_interp'],
-                modelo['decay'],
-                t_ini,
-                t_fin
+            # Crear modelo
+            model = Hawkes_Model(
+                data=data_model,
+                A=gdf_boundaries,
+                T=gdf_train["t"].max(),
+                cox_background=True,
+                a_0=dist.Normal(1, 10),
+                alpha=dist.Beta(20, 60),
+                beta=dist.HalfNormal(2.0),
+                sigmax_2=dist.HalfNormal(0.25)
             )
 
-            fechas_simuladas = [modelo['t0'] + pd.Timedelta(days=d) for d in eventos]
+            model.run_svi(lr=0.02, num_steps=steps)
 
-            st.success(f"✅ Se simularon {len(fechas_simuladas)} eventos.")
-            st.dataframe(pd.DataFrame({'Fecha simulada': fechas_simuladas}))
+            # Evaluación
+            data_test = gdf_test[["t", "Long", "Lat"]].rename(columns={"t": "T", "Long": "X", "Lat": "Y"})
+            log_lik = model.log_expected_likelihood(data_test)
+            aic = model.expected_AIC()
 
-            # --- Gráfico corregido ---
-            df_sim = pd.DataFrame({'Fecha simulada': fechas_simuladas})
-            df_sim['Fecha_dia'] = df_sim['Fecha simulada'].dt.date
-            conteo_por_dia = df_sim.groupby('Fecha_dia').size()
+        st.success("✅ Modelo entrenado exitosamente!")
+        st.write(f"**Log Expected Likelihood:** {log_lik:.2f}")
+        st.write(f"**Expected AIC:** {aic:.2f}")
 
-            fig, ax = plt.subplots()
-            conteo_por_dia.plot(kind='bar', ax=ax)
-            ax.set_title("Eventos simulados por día")
-            ax.set_ylabel("Frecuencia")
-            ax.set_xlabel("Fecha")
-            ax.tick_params(axis='x', rotation=45)
-            st.pyplot(fig)
-    else:
-        st.warning("🔄 Entrena el modelo antes de simular eventos.")
+        # Visualizaciones
+        st.subheader("🔍 Resultados del Modelo")
+
+        st.markdown("**1. Mapa de intensidad espacial (background):**")
+        fig1 = model.plot_spatial(include_cov=False)
+        st.pyplot(fig1)
+
+        st.markdown("**2. Curva de intensidad temporal:**")
+        fig2 = model.plot_temporal()
+        st.pyplot(fig2)
+
+        st.markdown("**3. Dispersión espacial del trigger (α, β, σ²):**")
+        fig3 = model.plot_trigger_posterior(trace=True)
+        st.pyplot(fig3)
+
+        st.markdown("**4. Decaimiento temporal de la autoexcitación:**")
+        fig4 = model.plot_trigger_time_decay()
+        st.pyplot(fig4)
+
+        st.markdown("**5. Proporción de eventos autoexcitados:**")
+        fig5 = model.plot_prop_excitation()
+        st.pyplot(fig5)
+
+        # Guardar como imágenes
+        output_dir = tempfile.mkdtemp()
+        fig1.savefig(f"{output_dir}/spatial.png")
+        fig2.savefig(f"{output_dir}/temporal.png")
+        fig3.savefig(f"{output_dir}/posterior.png")
+        fig4.savefig(f"{output_dir}/decay.png")
+        fig5.savefig(f"{output_dir}/excitation.png")
+
+        st.success("Descarga todas las gráficas como ZIP")
+        with zipfile.ZipFile(f"{output_dir}/resultados.zip", "w") as zipf:
+            zipf.write(f"{output_dir}/spatial.png", arcname="spatial.png")
+            zipf.write(f"{output_dir}/temporal.png", arcname="temporal.png")
+            zipf.write(f"{output_dir}/posterior.png", arcname="posterior.png")
+            zipf.write(f"{output_dir}/decay.png", arcname="decay.png")
+            zipf.write(f"{output_dir}/excitation.png", arcname="excitation.png")
+
+        with open(f"{output_dir}/resultados.zip", "rb") as f:
+            st.download_button("📥 Descargar Resultados (.zip)", f, file_name="resultados_modelo.zip")
