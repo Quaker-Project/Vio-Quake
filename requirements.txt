@@ -7,6 +7,6 @@ shapely
 pyproj
 fiona
 rtree
-numpyro
 jax[cpu]
+numpyro
 git+https://github.com/Bayesian-Spatio-Temporal-Point-Processes/bstpp.git
