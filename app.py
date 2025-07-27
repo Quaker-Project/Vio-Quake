@@ -15,7 +15,7 @@ import zipfile
 st.title("Simulación de riesgo espacial de eventos delictivos")
 
 # Parámetros configurables
-ruta_robos = st.file_uploader("Sube shapefile robos (.shp + .shx + .dbf + ... en zip)", type=["zip"])
+ruta_robos = st.file_uploader("Sube shapefile de los eventos (.shp + .shx + .dbf + ... en zip)", type=["zip"])
 ruta_contorno = st.file_uploader("Opcional: Subir shapefile contorno/calles (.zip)", type=["zip"])
 cell_size = st.number_input("Tamaño celda rejilla (metros)", min_value=100, max_value=2000, value=500, step=100)
 umbral = st.slider("Umbral probabilidad para riesgo", 0.0, 1.0, 0.7, 0.05)
