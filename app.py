@@ -7,6 +7,10 @@ import matplotlib.pyplot as plt
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import precision_score, recall_score, f1_score
 from tqdm import tqdm
+import io
+import os
+import tempfile
+import zipfile
 
 st.title("Predicción de riesgo espacial de hurtos")
 
@@ -19,9 +23,11 @@ mes_simulacion = st.text_input("Mes a simular (formato YYYY-MM)", "2019-09")
 fecha_entreno_inicio = st.text_input("Fecha inicio entrenamiento (YYYY-MM)", "2017-01")
 fecha_entreno_fin = st.text_input("Fecha fin entrenamiento (YYYY-MM)", "2019-08")
 
+# Nuevo input para título personalizado
+titulo_mapa = st.text_input("Título del mapa", f"Riesgo predicho vs hurtos reales - {mes_simulacion}")
+
 def cargar_shapefile_zip(zip_file):
     import zipfile
-    import os
     import tempfile
 
     if zip_file is None:
@@ -49,7 +55,6 @@ gdf["Fecha"] = pd.to_datetime(gdf["Fecha"], dayfirst=True, errors="coerce")
 gdf = gdf.dropna(subset=["Fecha"])
 gdf["month"] = gdf["Fecha"].dt.to_period("M")
 
-# Crear rejilla
 xmin, ymin, xmax, ymax = gdf.total_bounds
 cols = list(np.arange(xmin, xmax, cell_size))
 rows = list(np.arange(ymin, ymax, cell_size))
@@ -65,7 +70,6 @@ gdf_grid = gpd.GeoDataFrame({'cell_id': cell_ids}, geometry=polygons, crs=gdf.cr
 gdf_grid["X"] = gdf_grid.geometry.centroid.x
 gdf_grid["Y"] = gdf_grid.geometry.centroid.y
 
-# Filtrar meses para entrenamiento
 mes_entreno_inicio = pd.Period(fecha_entreno_inicio, freq="M")
 mes_entreno_fin = pd.Period(fecha_entreno_fin, freq="M")
 mes_sim = pd.Period(mes_simulacion, freq="M")
@@ -82,7 +86,6 @@ if len(train_months) == 0:
 st.write(f"Entrenando con meses desde {fecha_entreno_inicio} hasta {fecha_entreno_fin}")
 st.write(f"Simulando mes: {mes_simulacion}")
 
-# Botón para lanzar simulación
 if st.button("Ejecutar simulación"):
 
     data = []
@@ -102,14 +105,12 @@ if st.button("Ejecutar simulación"):
     model = RandomForestClassifier(n_estimators=100, class_weight="balanced", random_state=42)
     model.fit(X, y)
 
-    # Predicción mes simulación
     df_next = gdf_grid.copy()
     X_pred = df_next[["X", "Y"]]
     probs = model.predict_proba(X_pred)[:, 1]
     df_next["predicted_prob"] = probs
     df_next["predicted_risk"] = (probs >= umbral).astype(int)
 
-    # Cargar shapefile contorno si está
     gdf_contorno = None
     if ruta_contorno is not None:
         gdf_contorno = cargar_shapefile_zip(ruta_contorno)
@@ -137,7 +138,7 @@ if st.button("Ejecutar simulación"):
         st.warning("No hay eventos reales para el mes seleccionado.")
 
     plt.legend()
-    plt.title(f"Riesgo predicho vs hurtos reales - {mes_simulacion}")
+    plt.title(titulo_mapa)
     plt.axis("off")
     st.pyplot(fig)
 
@@ -160,3 +161,27 @@ if st.button("Ejecutar simulación"):
     st.write(f"Precision: {precision:.2f}")
     st.write(f"Recall:    {recall:.2f}")
     st.write(f"F1-score:  {f1:.2f}")
+
+    # --- Exportar GeoJSON y Shapefile ---
+    def to_geojson_bytes(gdf):
+        return gdf.to_json().encode('utf-8')
+
+    def to_shapefile_bytes(gdf):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            shp_path = os.path.join(tmpdir, "prediccion.shp")
+            gdf.to_file(shp_path)
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w") as zf:
+                for ext in [".shp", ".shx", ".dbf", ".prj", ".cpg"]:
+                    file = os.path.join(tmpdir, f"prediccion{ext}")
+                    if os.path.exists(file):
+                        zf.write(file, arcname=f"prediccion{ext}")
+            return zip_buffer.getvalue()
+
+    df_export = df_next.copy()
+
+    geojson_bytes = to_geojson_bytes(df_export)
+    st.download_button("Descargar predicción GeoJSON", geojson_bytes, file_name="prediccion_riesgo.geojson", mime="application/geo+json")
+
+    shapefile_bytes = to_shapefile_bytes(df_export)
+    st.download_button("Descargar predicción Shapefile (zip)", shapefile_bytes, file_name="prediccion_riesgo.zip", mime="application/zip")
