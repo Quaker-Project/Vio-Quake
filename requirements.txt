@@ -1,12 +1,10 @@
-streamlit
-pandas
-numpy
-matplotlib
-geopandas
-shapely
-pyproj
-fiona
-rtree
-jax[cpu]
-numpyro
-git+https://github.com/Bayesian-Spatio-Temporal-Point-Processes/bstpp.git
+streamlit>=1.33.0
+pandas>=1.5.0
+geopandas>=0.13.0
+shapely>=2.0
+matplotlib>=3.7.0
+scikit-learn>=1.3.0
+pyproj>=3.5.0
+fiona>=1.9
+tqdm>=4.65.0
+zipfile36  # Si estás en Python <3.7 (para compatibilidad con archivos ZIP)
