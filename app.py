@@ -51,9 +51,29 @@ if gdf is None:
     st.stop()
 
 gdf = gdf.to_crs(epsg=32616)  # UTM metros
-gdf["Fecha"] = pd.to_datetime(gdf["Fecha"], dayfirst=True, errors="coerce")
+from dateutil.parser import parse
+
+# Función segura para convertir fechas en cualquier formato
+def parse_fecha_segura(fecha):
+    try:
+        return parse(str(fecha), dayfirst=True, fuzzy=True)
+    except:
+        return pd.NaT
+
+# Aplicar parseo robusto a la columna de fechas
+gdf["Fecha"] = gdf["Fecha"].apply(parse_fecha_segura)
+
+# Mostrar advertencia si hay fechas no válidas
+errores = gdf[gdf["Fecha"].isna()]
+if not errores.empty:
+    st.warning(f"No se pudieron reconocer {len(errores)} fechas y serán descartadas.")
+
+# Eliminar filas con fechas no válidas
 gdf = gdf.dropna(subset=["Fecha"])
+
+# Crear columna de mes
 gdf["month"] = gdf["Fecha"].dt.to_period("M")
+
 
 xmin, ymin, xmax, ymax = gdf.total_bounds
 cols = list(np.arange(xmin, xmax, cell_size))
