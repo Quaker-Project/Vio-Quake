@@ -43,7 +43,7 @@ def cargar_shapefile_zip(zip_file):
         return gpd.read_file(os.path.join(tmpdir, shp_files[0]))
 
 if ruta_robos is None:
-    st.warning("Sube el shapefile de hurtos para continuar.")
+    st.warning("Sube el shapefile de puntos para continuar.")
     st.stop()
 
 gdf = cargar_shapefile_zip(ruta_robos)
