@@ -12,7 +12,7 @@ import os
 import tempfile
 import zipfile
 
-st.title("Predicción de riesgo espacial de hurtos")
+st.title("Simulación de riesgo espacial de eventos delictivos")
 
 # Parámetros configurables
 ruta_robos = st.file_uploader("Sube shapefile robos (.shp + .shx + .dbf + ... en zip)", type=["zip"])
