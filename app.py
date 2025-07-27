@@ -153,7 +153,7 @@ if st.button("Ejecutar simulación"):
         st.warning("No se detectaron celdas con riesgo alto según el umbral.")
 
     if not df_test_month.empty:
-        df_test_month.plot(ax=ax, color="black", markersize=8, alpha=0.7, label="Hurtos reales")
+        df_test_month.plot(ax=ax, color="black", markersize=8, alpha=0.7, label="Eventos reales")
     else:
         st.warning("No hay eventos reales para el mes seleccionado.")
 
